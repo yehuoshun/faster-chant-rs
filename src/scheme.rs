@@ -89,22 +89,50 @@ impl SchemeManager {
         Ok(manager)
     }
 
-    /// 匹配方案：皮肤名完整匹配 > 英雄名匹配 > 无
+    /// 匹配方案：皮肤名完整匹配 > 皮肤名匹配 > 英雄名匹配 > 拼音搜索
     pub fn match_scheme(&self, skin_name: &str, hero_name: &str) -> Option<&HeroScheme> {
         let full = format!("{} {}", skin_name, hero_name);
-        // 1. 完整匹配
         if let Some(s) = self.schemes.get(&full) {
             return Some(s);
         }
-        // 2. 皮肤名匹配
         if let Some(s) = self.schemes.get(skin_name) {
             return Some(s);
         }
-        // 3. 英雄名匹配
         if let Some(key) = self.hero_index.get(hero_name) {
             return self.schemes.get(key);
         }
         None
+    }
+
+    /// 按拼音首字母搜索方案，返回匹配的 display_name 列表
+    pub fn search_pinyin(&self, input: &str) -> Vec<String> {
+        let input = input.to_lowercase();
+        let mut results: Vec<String> = Vec::new();
+
+        for (name, scheme) in &self.schemes {
+            // 直接包含匹配
+            if name.to_lowercase().contains(&input) {
+                results.push(name.clone());
+                continue;
+            }
+
+            // 拼音首字母匹配
+            let pinyin = to_pinyin_initials(&scheme.hero_name);
+            if pinyin.to_lowercase().contains(&input) {
+                results.push(name.clone());
+                continue;
+            }
+
+            // 皮肤名拼音
+            if let Some(ref skin) = scheme.skin_name {
+                let skin_pinyin = to_pinyin_initials(skin);
+                if skin_pinyin.to_lowercase().contains(&input) {
+                    results.push(name.clone());
+                }
+            }
+        }
+
+        results
     }
 
     /// 获取所有方案
@@ -140,6 +168,32 @@ pub fn parse_skin_text(text: &str) -> (String, String) {
     }
 }
 
+/// 获取中文文本的拼音首字母
+/// "绯村剑心" -> "fcjx"
+fn to_pinyin_initials(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| {
+            pinyin::Parser::new()
+                .parse(&c.to_string())
+                .into_iter()
+                .next()
+                .map(|p| p.first_letter().to_lowercase())
+                .or_else(|| {
+                    // 英文字母直接保留
+                    if c.is_ascii_alphabetic() {
+                        Some(c.to_ascii_lowercase().to_string())
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect::<String>()
+        .chars()
+        // 过滤非字母字符
+        .filter(|c| c.is_ascii_alphabetic())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +212,12 @@ mod tests {
             parse_skin_text("  天童木更 绯村剑心  "),
             ("天童木更".to_string(), "绯村剑心".to_string())
         );
+    }
+
+    #[test]
+    fn test_pinyin_initials() {
+        assert_eq!(to_pinyin_initials("绯村剑心"), "fcjx");
+        assert_eq!(to_pinyin_initials("卫宫"), "wg");
+        assert_eq!(to_pinyin_initials("桐人"), "tr");
     }
 }
