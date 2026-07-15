@@ -105,6 +105,14 @@ fn main() -> Result<()> {
     let cal = Arc::new(auto::calibration::Calibration::new());
     let running = Arc::new(AtomicBool::new(true));
 
+    // 骚话定时器
+    let mut last_taunt = std::time::Instant::now();
+    let mut last_combat = std::time::Instant::now();
+
+    // 骚话定时器
+    let mut last_taunt = std::time::Instant::now();
+    let mut last_combat = std::time::Instant::now();
+
     // 系统托盘
     let tray_rx = ui::tray::Tray::spawn(running.clone())?;
 
@@ -165,18 +173,21 @@ fn main() -> Result<()> {
                                     if let Some(line) = auto::sender::pick_random(&scheme.triggers.kill) {
                                         info!("⚔️ 击杀 → {}", line);
                                         let _ = auto::sender::send_message(line);
+                                        last_combat = std::time::Instant::now();
                                     }
                                 }
                                 core::kda::KdaEvent::Death => {
                                     if let Some(line) = auto::sender::pick_random(&scheme.triggers.death) {
                                         info!("💀 死亡 → {}", line);
                                         let _ = auto::sender::send_message(line);
+                                        last_combat = std::time::Instant::now();
                                     }
                                 }
                                 core::kda::KdaEvent::Assist => {
                                     if let Some(line) = auto::sender::pick_random(&scheme.triggers.assist) {
                                         info!("🤝 助攻 → {}", line);
                                         let _ = auto::sender::send_message(line);
+                                        last_combat = std::time::Instant::now();
                                     }
                                 }
                                 core::kda::KdaEvent::GameStart => {
@@ -184,8 +195,27 @@ fn main() -> Result<()> {
                                         info!("🟢 开局 → {}", line);
                                         let _ = auto::sender::send_all_chat(line);
                                     }
+                                    last_taunt = std::time::Instant::now();
+                                    last_combat = std::time::Instant::now();
                                 }
                                 core::kda::KdaEvent::None => {}
+                            }
+
+                            // 骚话定时器：每 60s 发一条，战斗后 5s 冷却
+                            let now = std::time::Instant::now();
+                            let cd = std::time::Duration::from_secs(cfg.taunt_cooldown_secs);
+                            let interval = std::time::Duration::from_secs(cfg.taunt_interval_secs);
+
+                            if now.duration_since(last_combat) > cd
+                                && now.duration_since(last_taunt) > interval
+                            {
+                                if let Some(boxes) = scheme.triggers.taunt.boxes.first() {
+                                    if let Some(line) = auto::sender::pick_random(boxes) {
+                                        info!("🗣️ 骚话 → {}", line);
+                                        let _ = auto::sender::send_message(line);
+                                        last_taunt = now;
+                                    }
+                                }
                             }
                         }
                     }

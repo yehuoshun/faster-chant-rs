@@ -21,6 +21,10 @@ pub struct AppConfig {
     pub schemes_dir: PathBuf,
     /// 全局设置文件路径
     pub settings_path: PathBuf,
+    /// 骚话定时器间隔（秒）
+    pub taunt_interval_secs: u64,
+    /// 战斗事件后骚话冷却（秒）
+    pub taunt_cooldown_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +94,8 @@ impl Default for AppConfig {
             },
             schemes_dir: base.join("schemes"),
             settings_path: base.join("settings.json"),
+            taunt_interval_secs: 60,
+            taunt_cooldown_secs: 5,
         }
     }
 }
