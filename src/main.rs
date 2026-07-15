@@ -3,6 +3,7 @@ use log::{debug, info, warn};
 use windows::Win32::Foundation::HWND;
 
 mod config;
+mod kda;
 mod ocr;
 mod scheme;
 mod window;
@@ -12,19 +13,16 @@ mod window;
 enum GamePage {
     /// 确认页：英雄已选，等待出击
     Confirming,
-    /// 游戏中：KDA 可见，喊话逻辑激活
+    /// 游戏中：喊话逻辑激活
     InGame,
     /// 结算/主菜单/大厅/未启动
     Inactive,
 }
 
-/// 状态机：检测当前页面
+/// 页面状态机
 struct PageDetector {
-    /// 上一次状态
     prev: GamePage,
-    /// 当前选中的英雄名（确认页捕获）
     current_hero: Option<String>,
-    /// 当前皮肤名
     current_skin: Option<String>,
 }
 
@@ -39,24 +37,29 @@ impl PageDetector {
 
     /// 检测当前页面
     fn detect(&self, hwnd: HWND, cfg: &config::AppConfig) -> GamePage {
-        // 1. 确认页：蓝色宝石存在
+        // 1. 确认页：蓝色宝石
         if window::check_blue_gem(hwnd, cfg) {
             return GamePage::Confirming;
         }
-
-        // 2. 游戏中：顶部计时器区域特征（暗底白字）
+        // 2. 游戏中：小地图
         if window::check_ingame(hwnd, cfg) {
             return GamePage::InGame;
         }
-
-        // 3. 都不是 → 结算/主菜单/大厅
+        // 3. 都不是
         GamePage::Inactive
     }
 
     /// 处理状态转换
-    fn transition(&mut self, new_page: GamePage, hwnd: HWND, cfg: &config::AppConfig, ocr: &ocr::Ocr, schemes: &scheme::SchemeManager) {
+    fn transition(
+        &mut self,
+        new_page: GamePage,
+        hwnd: HWND,
+        cfg: &config::AppConfig,
+        ocr: &ocr::Ocr,
+        schemes: &scheme::SchemeManager,
+    ) {
         if new_page == self.prev {
-            return; // 状态未变，跳过
+            return;
         }
 
         match (&self.prev, &new_page) {
@@ -68,7 +71,6 @@ impl PageDetector {
                         info!("识别: 皮肤='{}', 英雄='{}'", skin, hero);
                         self.current_skin = Some(skin.clone());
                         self.current_hero = Some(hero.clone());
-
                         match schemes.match_scheme(&skin, &hero) {
                             Some(s) => info!("方案匹配: {}", s.display_name),
                             None => info!("未找到方案: {} {}", skin, hero),
@@ -77,27 +79,17 @@ impl PageDetector {
                     Err(e) => warn!("OCR 失败: {}", e),
                 }
             }
-            // 离开确认页 → 进入游戏
-            (GamePage::Confirming, GamePage::InGame) => {
-                info!("→ 进入游戏，启动 KDA 检测");
-                // TODO: 启动 KDA OCR 循环
-            }
-            // 离开确认页 → 非活跃（取消确认/异常）
+            // 进入游戏
+            (GamePage::Confirming, GamePage::InGame) => info!("→ 进入游戏"),
+            (GamePage::Inactive, GamePage::InGame) => info!("→ 检测到已在游戏中（冷启动）"),
+            // 离开确认页
             (GamePage::Confirming, GamePage::Inactive) => {
                 info!("→ 离开确认页（未进入游戏）");
                 self.current_hero = None;
                 self.current_skin = None;
             }
-            // 游戏结束 → 非活跃
-            (GamePage::InGame, GamePage::Inactive) => {
-                info!("→ 游戏结束/结算");
-                // TODO: 停止 KDA 检测
-            }
-            // 从非活跃进入游戏（冷启动时已在游戏中）
-            (GamePage::Inactive, GamePage::InGame) => {
-                info!("→ 检测到已在游戏中（冷启动）");
-                // TODO: 启动 KDA 检测 + OCR 英雄名兜底
-            }
+            // 游戏结束
+            (GamePage::InGame, GamePage::Inactive) => info!("→ 游戏结束/结算"),
             _ => {}
         }
 
@@ -117,12 +109,12 @@ fn main() -> Result<()> {
 
     let ocr = ocr::Ocr::new()?;
     let mut detector = PageDetector::new();
+    let mut kda_tracker = kda::KdaTracker::new()?;
 
     loop {
         let hwnd = match window::find_game_window(&cfg.game_window_title) {
             Some(h) => h,
             None => {
-                // 游戏窗口不存在
                 if detector.prev != GamePage::Inactive {
                     info!("游戏窗口丢失");
                     detector.prev = GamePage::Inactive;
@@ -136,6 +128,20 @@ fn main() -> Result<()> {
 
         let page = detector.detect(hwnd, &cfg);
         detector.transition(page, hwnd, &cfg, &ocr, &schemes);
+
+        // 游戏中持续检测 KDA
+        if page == GamePage::InGame {
+            match kda_tracker.tick(hwnd, &cfg) {
+                Ok(event) => match event {
+                    kda::KdaEvent::Kill => info!("⚔️ 击杀！"),
+                    kda::KdaEvent::Death => info!("💀 死亡"),
+                    kda::KdaEvent::Assist => info!("🤝 助攻"),
+                    kda::KdaEvent::GameStart => info!("🟢 新对局开始"),
+                    kda::KdaEvent::None => {}
+                },
+                Err(e) => warn!("KDA 检测失败: {}", e),
+            }
+        }
 
         std::thread::sleep(std::time::Duration::from_millis(cfg.poll_interval_ms));
     }
