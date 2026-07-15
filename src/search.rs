@@ -435,8 +435,12 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
     let rows = data.rows.lock().unwrap();
     let sel = *data.selected.lock().unwrap();
     let mut y = sep_y + 2;
+    let mut last_hero = String::new();
 
     for (i, row) in rows.iter().enumerate() {
+        let is_first_of_group = row.hero_name != last_hero;
+        last_hero = row.hero_name.clone();
+
         let row_rect = RECT {
             left: PADDING, top: y,
             right: rect.right - PADDING, bottom: y + ROW_HEIGHT,
@@ -448,7 +452,6 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
             DeleteObject(sel_bg);
             SetTextColor(hdc, RGB(255, 255, 255));
         } else {
-            // 交替行背景
             if i % 2 == 0 {
                 let alt = CreateSolidBrush(RGB(34, 34, 39));
                 FillRect(hdc, &row_rect, alt);
@@ -457,17 +460,19 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
             SetTextColor(hdc, RGB(200, 200, 215));
         }
 
-        // 英雄名
-        let hero: Vec<u16> = row.hero_name.encode_utf16().collect();
-        let mut hr = RECT {
-            left: PADDING + 8, top: y + 2,
-            right: PADDING + COL_HERO, bottom: y + ROW_HEIGHT - 2,
-        };
-        windows::Win32::Graphics::Gdi::DrawTextW(
-            hdc, &hero, &mut hr,
-            windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
-                | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
-        );
+        // 英雄名：只在每组第一行显示
+        if is_first_of_group {
+            let hero: Vec<u16> = row.hero_name.encode_utf16().collect();
+            let mut hr = RECT {
+                left: PADDING + 8, top: y + 2,
+                right: PADDING + COL_HERO, bottom: y + ROW_HEIGHT - 2,
+            };
+            windows::Win32::Graphics::Gdi::DrawTextW(
+                hdc, &hero, &mut hr,
+                windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
+                    | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+            );
+        }
 
         // 皮肤名
         SetTextColor(hdc, if i == sel { RGB(220, 220, 255) } else { RGB(170, 170, 185) });
