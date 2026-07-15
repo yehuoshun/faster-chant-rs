@@ -8,6 +8,7 @@ use std::sync::{
 mod auto;
 mod config;
 mod core;
+mod editor;
 mod scheme;
 mod ui;
 
@@ -133,7 +134,11 @@ fn main() -> Result<()> {
                     search_popup.show();
                 }
                 ui::tray::TrayCommand::OpenEditor => {
-                    info!("打开编辑器（TODO）");
+                    info!("打开编辑器");
+                    let editor = editor::HeroEditor::new(schemes.all().into_iter().cloned().collect(), cfg.schemes_dir.clone());
+                    std::thread::spawn(move || {
+                        let _ = editor.run();
+                    });
                 }
                 ui::tray::TrayCommand::Quit => {
                     info!("退出");

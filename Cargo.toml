@@ -28,6 +28,7 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 pinyin = "0.10"
+eframe = "0.29"
 
 [profile.release]
 opt-level = 3
