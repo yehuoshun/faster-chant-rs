@@ -8,6 +8,11 @@ on:
   issues:
     types: [opened, closed, reopened]
 
+# 并发控制：同一批 commit 只发最后一条通知
+concurrency:
+  group: dingtalk-notify
+  cancel-in-progress: true
+
 jobs:
   notify:
     runs-on: ubuntu-latest
