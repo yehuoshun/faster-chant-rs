@@ -1,4 +1,4 @@
-use crate::scheme::{HeroScheme, SchemeManager};
+use crate::scheme::SchemeManager;
 use anyhow::Result;
 use log::info;
 use std::collections::HashMap;
@@ -16,33 +16,21 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE, HTCAPTION, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP,
 };
 
-const WINDOW_WIDTH: i32 = 340;
+const WINDOW_WIDTH: i32 = 360;
 const WINDOW_HEIGHT: i32 = 420;
 const PADDING: i32 = 12;
 const INPUT_HEIGHT: i32 = 32;
-const HEADER_HEIGHT: i32 = 26;
-const ITEM_HEIGHT: i32 = 24;
-const INDENT: i32 = 20;
+const HEADER_HEIGHT: i32 = 22;
+const ROW_HEIGHT: i32 = 24;
+const COL_HERO: i32 = 100;
+const COL_SEP: i32 = 20;
 
-/// 搜索结果分组
+/// 搜索结果行
 #[derive(Debug, Clone)]
-pub struct SearchGroup {
+pub struct ResultRow {
     pub hero_name: String,
-    pub skins: Vec<SkinEntry>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SkinEntry {
-    pub display_name: String,
     pub skin_name: String,
-    pub is_default: bool,
-}
-
-/// 扁平化条目（渲染用）
-#[derive(Debug, Clone)]
-enum FlatItem {
-    Hero(String),
-    Skin(SkinEntry),
+    pub display_name: String,
 }
 
 pub type SearchCallback = Box<dyn Fn(&str) + Send + Sync>;
@@ -50,7 +38,7 @@ pub type SearchCallback = Box<dyn Fn(&str) + Send + Sync>;
 pub struct SearchPopup {
     hwnd: HWND,
     input: Arc<Mutex<String>>,
-    flat_items: Arc<Mutex<Vec<FlatItem>>>,
+    rows: Arc<Mutex<Vec<ResultRow>>>,
     selected: Arc<Mutex<usize>>,
     schemes: Arc<SchemeManager>,
     on_select: Arc<Mutex<Option<SearchCallback>>>,
@@ -59,16 +47,16 @@ pub struct SearchPopup {
 impl SearchPopup {
     pub fn new(schemes: Arc<SchemeManager>) -> Result<Self> {
         let input = Arc::new(Mutex::new(String::new()));
-        let flat_items = Arc::new(Mutex::new(Vec::new()));
+        let rows = Arc::new(Mutex::new(Vec::new()));
         let selected = Arc::new(Mutex::new(0usize));
         let on_select: Arc<Mutex<Option<SearchCallback>>> = Arc::new(Mutex::new(None));
 
-        let hwnd = create_window(&input, &flat_items, &selected, &on_select, schemes.clone())?;
+        let hwnd = create_window(&input, &rows, &selected, &on_select, schemes.clone())?;
 
         Ok(Self {
             hwnd,
             input,
-            flat_items,
+            rows,
             selected,
             schemes,
             on_select,
@@ -77,7 +65,7 @@ impl SearchPopup {
 
     pub fn show(&self) {
         *self.input.lock().unwrap() = String::new();
-        self.refresh_results("");
+        self.refresh("");
 
         let screen_w = unsafe {
             windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
@@ -108,98 +96,84 @@ impl SearchPopup {
     }
 
     pub fn hide(&self) {
-        unsafe {
-            ShowWindow(self.hwnd, SW_HIDE);
-        }
+        unsafe { ShowWindow(self.hwnd, SW_HIDE); }
     }
 
     pub fn set_callback<F: Fn(&str) + Send + Sync + 'static>(&self, f: F) {
         *self.on_select.lock().unwrap() = Some(Box::new(f));
     }
 
-    fn refresh_results(&self, input: &str) {
+    fn refresh(&self, input: &str) {
         let schemes = self.schemes.all();
-        let groups = group_by_hero(&schemes, input);
-        let flat = flatten(&groups);
-        *self.flat_items.lock().unwrap() = flat;
+        let rows = build_rows(&schemes, input);
+        *self.rows.lock().unwrap() = rows;
         *self.selected.lock().unwrap() = 0;
     }
 }
 
 impl Drop for SearchPopup {
     fn drop(&mut self) {
-        unsafe {
-            DestroyWindow(self.hwnd).ok();
-        }
+        unsafe { DestroyWindow(self.hwnd).ok(); }
     }
 }
 
-/// 搜索并分组：输入匹配 → 按英雄名分组
-fn group_by_hero(schemes: &[&HeroScheme], input: &str) -> Vec<SearchGroup> {
+/// 搜索匹配 → 扁平行列表
+fn build_rows(schemes: &[&crate::scheme::HeroScheme], input: &str) -> Vec<ResultRow> {
     let input = input.to_lowercase();
-    let mut hero_map: HashMap<String, Vec<SkinEntry>> = HashMap::new();
+    let mut rows: Vec<ResultRow> = Vec::new();
 
     for scheme in schemes {
-        let matched = if input.is_empty() {
-            true
-        } else {
+        if !input.is_empty() {
             let pinyin = crate::scheme::to_pinyin_initials(&scheme.hero_name).to_lowercase();
-            scheme.hero_name.contains(&input)
+            let skin_pinyin = scheme
+                .skin_name
+                .as_deref()
+                .map(|s| crate::scheme::to_pinyin_initials(s).to_lowercase());
+            let matched = scheme.hero_name.contains(&input)
                 || pinyin.contains(&input)
+                || scheme.display_name.contains(&input)
+                || skin_pinyin
+                    .as_ref()
+                    .map(|sp| sp.contains(&input))
+                    .unwrap_or(false)
                 || scheme
                     .skin_name
                     .as_deref()
                     .map(|s| s.contains(&input))
-                    .unwrap_or(false)
-        };
-
-        if !matched {
-            continue;
+                    .unwrap_or(false);
+            if !matched {
+                continue;
+            }
         }
 
-        let entry = hero_map.entry(scheme.hero_name.clone()).or_default();
-        entry.push(SkinEntry {
-            display_name: scheme.display_name.clone(),
+        rows.push(ResultRow {
+            hero_name: scheme.hero_name.clone(),
             skin_name: scheme.skin_name.clone().unwrap_or_else(|| "原皮".to_string()),
-            is_default: scheme.skin_name.is_none(),
+            display_name: scheme.display_name.clone(),
         });
     }
 
-    // 排序：先按英雄名，皮肤按 is_default 优先
-    let mut groups: Vec<SearchGroup> = hero_map
-        .into_iter()
-        .map(|(hero_name, skins)| {
-            let mut skins = skins;
-            skins.sort_by(|a, b| {
-                b.is_default
-                    .cmp(&a.is_default)
+    // 排序：英雄名 > 皮肤名（原皮优先）
+    rows.sort_by(|a, b| {
+        a.hero_name
+            .cmp(&b.hero_name)
+            .then_with(|| {
+                let a_is_default = a.skin_name == "原皮";
+                let b_is_default = b.skin_name == "原皮";
+                b_is_default
+                    .cmp(&a_is_default)
                     .then_with(|| a.skin_name.cmp(&b.skin_name))
-            });
-            SearchGroup { hero_name, skins }
-        })
-        .collect();
+            })
+    });
 
-    groups.sort_by(|a, b| a.hero_name.cmp(&b.hero_name));
-    groups
-}
-
-/// 扁平化：Hero 标题 + Skin 条目
-fn flatten(groups: &[SearchGroup]) -> Vec<FlatItem> {
-    let mut items = Vec::new();
-    for g in groups {
-        items.push(FlatItem::Hero(g.hero_name.clone()));
-        for skin in &g.skins {
-            items.push(FlatItem::Skin(skin.clone()));
-        }
-    }
-    items
+    rows
 }
 
 // ── 窗口创建 ──
 
 fn create_window(
     input: &Arc<Mutex<String>>,
-    flat_items: &Arc<Mutex<Vec<FlatItem>>>,
+    rows: &Arc<Mutex<Vec<ResultRow>>>,
     selected: &Arc<Mutex<usize>>,
     on_select: &Arc<Mutex<Option<SearchCallback>>>,
     schemes: Arc<SchemeManager>,
@@ -211,7 +185,7 @@ fn create_window(
 
         let userdata = Box::new(SearchWindowData {
             input: input.clone(),
-            flat_items: flat_items.clone(),
+            rows: rows.clone(),
             selected: selected.clone(),
             on_select: on_select.clone(),
             schemes,
@@ -253,7 +227,7 @@ fn create_window(
 
 struct SearchWindowData {
     input: Arc<Mutex<String>>,
-    flat_items: Arc<Mutex<Vec<FlatItem>>>,
+    rows: Arc<Mutex<Vec<ResultRow>>>,
     selected: Arc<Mutex<usize>>,
     on_select: Arc<Mutex<Option<SearchCallback>>>,
     schemes: Arc<SchemeManager>,
@@ -279,11 +253,7 @@ unsafe extern "system" fn search_wndproc(
         }
         WM_NCHITTEST => LRESULT(HTCAPTION as isize),
         WM_ERASEBKGND => LRESULT(1),
-        WM_PAINT => {
-            let data = get_data(hwnd);
-            paint(hwnd, &data);
-            LRESULT(0)
-        }
+        WM_PAINT => { let data = get_data(hwnd); paint(hwnd, &data); LRESULT(0) }
         WM_CHAR => {
             let data = get_data(hwnd);
             let c = char::from_u32(wparam.0 as u32).unwrap_or('\0');
@@ -306,48 +276,21 @@ unsafe extern "system" fn search_wndproc(
         WM_KEYDOWN => {
             let data = get_data(hwnd);
             let vk = wparam.0 as u32;
-            let items = data.flat_items.lock().unwrap();
-            let len = items.len();
+            let len = data.rows.lock().unwrap().len();
             let mut sel = data.selected.lock().unwrap();
-
             match vk {
-                VK_UP if *sel > 0 => {
-                    *sel -= 1;
-                    // 跳过 Hero 标题行
-                    if let FlatItem::Hero(_) = &items[*sel] {
-                        if *sel > 0 {
-                            *sel -= 1;
-                        }
-                    }
-                    InvalidateRect(hwnd, None, true);
-                }
-                VK_DOWN if *sel + 1 < len => {
-                    *sel += 1;
-                    if let FlatItem::Hero(_) = &items[*sel] {
-                        if *sel + 1 < len {
-                            *sel += 1;
-                        }
-                    }
-                    InvalidateRect(hwnd, None, true);
-                }
-                VK_RETURN => {
-                    confirm_selection(&data);
-                }
-                VK_ESCAPE => {
-                    hide_window(hwnd);
-                }
+                VK_UP if *sel > 0 => { *sel -= 1; InvalidateRect(hwnd, None, true); }
+                VK_DOWN if *sel + 1 < len => { *sel += 1; InvalidateRect(hwnd, None, true); }
+                VK_RETURN => { confirm_selection(&data); }
+                VK_ESCAPE => { hide_window(hwnd); }
                 _ => {}
             }
             LRESULT(0)
         }
-        WM_KILLFOCUS => {
-            hide_window(hwnd);
-            LRESULT(0)
-        }
+        WM_KILLFOCUS => { hide_window(hwnd); LRESULT(0) }
         WM_DESTROY => {
             let ptr = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
-                hwnd,
-                windows::Win32::UI::WindowsAndMessaging::GWL_USERDATA,
+                hwnd, windows::Win32::UI::WindowsAndMessaging::GWL_USERDATA,
             ) as *mut SearchWindowData;
             let _ = Box::from_raw(ptr);
             LRESULT(0)
@@ -358,8 +301,7 @@ unsafe extern "system" fn search_wndproc(
 
 unsafe fn get_data(hwnd: HWND) -> &'static SearchWindowData {
     let ptr = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
-        hwnd,
-        windows::Win32::UI::WindowsAndMessaging::GWL_USERDATA,
+        hwnd, windows::Win32::UI::WindowsAndMessaging::GWL_USERDATA,
     ) as *mut SearchWindowData;
     &*ptr
 }
@@ -367,8 +309,7 @@ unsafe fn get_data(hwnd: HWND) -> &'static SearchWindowData {
 fn update_search(data: &SearchWindowData) {
     let input = data.input.lock().unwrap().clone();
     let schemes = data.schemes.all();
-    let groups = group_by_hero(&schemes, &input);
-    *data.flat_items.lock().unwrap() = flatten(&groups);
+    *data.rows.lock().unwrap() = build_rows(&schemes, &input);
     *data.selected.lock().unwrap() = 0;
     unsafe {
         InvalidateRect(
@@ -383,22 +324,19 @@ fn update_search(data: &SearchWindowData) {
 }
 
 fn confirm_selection(data: &SearchWindowData) {
-    let items = data.flat_items.lock().unwrap();
+    let rows = data.rows.lock().unwrap();
     let sel = *data.selected.lock().unwrap();
-    if sel < items.len() {
-        if let FlatItem::Skin(ref skin) = items[sel] {
-            info!("校准选择: {}", skin.display_name);
-            if let Some(ref cb) = *data.on_select.lock().unwrap() {
-                cb(&skin.display_name);
-            }
+    if sel < rows.len() {
+        let name = rows[sel].display_name.clone();
+        info!("校准选择: {}", name);
+        if let Some(ref cb) = *data.on_select.lock().unwrap() {
+            cb(&name);
         }
     }
 }
 
 fn hide_window(hwnd: HWND) {
-    unsafe {
-        ShowWindow(hwnd, SW_HIDE);
-    }
+    unsafe { ShowWindow(hwnd, SW_HIDE); }
 }
 
 // ── 绘制 ──
@@ -410,7 +348,6 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
     let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
     let hdc = windows::Win32::Graphics::Gdi::BeginPaint(hwnd, &mut ps);
 
-    // 背景
     let bg = CreateSolidBrush(RGB(28, 28, 33));
     FillRect(hdc, &rect, bg);
     DeleteObject(bg);
@@ -432,10 +369,8 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
 
     let border = CreateSolidBrush(RGB(80, 80, 180));
     let border_rect = RECT {
-        left: PADDING - 1,
-        top: PADDING - 1,
-        right: rect.right - PADDING + 1,
-        bottom: PADDING + INPUT_HEIGHT + 1,
+        left: PADDING - 1, top: PADDING - 1,
+        right: rect.right - PADDING + 1, bottom: PADDING + INPUT_HEIGHT + 1,
     };
     windows::Win32::Graphics::Gdi::FrameRect(hdc, &border_rect, border);
     DeleteObject(border);
@@ -451,81 +386,105 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
     } else {
         SetTextColor(hdc, RGB(230, 230, 240));
     }
-    let mut text_rect = RECT {
-        left: PADDING + 8,
-        top: PADDING + 4,
-        right: rect.right - PADDING - 8,
-        bottom: PADDING + INPUT_HEIGHT,
+    let mut tr = RECT {
+        left: PADDING + 8, top: PADDING + 4,
+        right: rect.right - PADDING - 8, bottom: PADDING + INPUT_HEIGHT,
     };
     windows::Win32::Graphics::Gdi::DrawTextW(
-        hdc,
-        &text,
-        &mut text_rect,
+        hdc, &text, &mut tr,
         windows::Win32::Graphics::Gdi::DT_LEFT
             | windows::Win32::Graphics::Gdi::DT_VCENTER
             | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
     );
     drop(input);
 
-    // ── 结果列表 ──
-    let items = data.flat_items.lock().unwrap();
+    // ── 表头 ──
+    let header_y = PADDING + INPUT_HEIGHT + 8;
+    SetTextColor(hdc, RGB(120, 120, 140));
+    let header_hero: Vec<u16> = "英雄".encode_utf16().collect();
+    let mut hr = RECT {
+        left: PADDING + 8, top: header_y,
+        right: PADDING + COL_HERO, bottom: header_y + HEADER_HEIGHT,
+    };
+    windows::Win32::Graphics::Gdi::DrawTextW(
+        hdc, &header_hero, &mut hr,
+        windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+    );
+
+    let header_skin: Vec<u16> = "皮肤".encode_utf16().collect();
+    let mut sr = RECT {
+        left: PADDING + COL_HERO + COL_SEP, top: header_y,
+        right: rect.right - PADDING, bottom: header_y + HEADER_HEIGHT,
+    };
+    windows::Win32::Graphics::Gdi::DrawTextW(
+        hdc, &header_skin, &mut sr,
+        windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+    );
+
+    // 分隔线
+    let sep_y = header_y + HEADER_HEIGHT;
+    let sep_brush = CreateSolidBrush(RGB(55, 55, 60));
+    let sep_rect = RECT {
+        left: PADDING, top: sep_y,
+        right: rect.right - PADDING, bottom: sep_y + 1,
+    };
+    FillRect(hdc, &sep_rect, sep_brush);
+    DeleteObject(sep_brush);
+
+    // ── 数据行 ──
+    let rows = data.rows.lock().unwrap();
     let sel = *data.selected.lock().unwrap();
-    let mut y = PADDING + INPUT_HEIGHT + 10;
+    let mut y = sep_y + 2;
 
-    for (i, item) in items.iter().enumerate() {
-        let (text, indent, is_hero) = match item {
-            FlatItem::Hero(name) => (name.clone(), 0, true),
-            FlatItem::Skin(skin) => {
-                let label = format!("└ {}", skin.skin_name);
-                (label, INDENT, false)
-            }
-        };
-
-        let item_rect = RECT {
-            left: PADDING + indent,
-            top: y,
-            right: rect.right - PADDING,
-            bottom: y + if is_hero { HEADER_HEIGHT } else { ITEM_HEIGHT },
+    for (i, row) in rows.iter().enumerate() {
+        let row_rect = RECT {
+            left: PADDING, top: y,
+            right: rect.right - PADDING, bottom: y + ROW_HEIGHT,
         };
 
         if i == sel {
             let sel_bg = CreateSolidBrush(RGB(70, 70, 160));
-            let full_rect = RECT {
-                left: PADDING,
-                right: rect.right - PADDING,
-                ..item_rect
-            };
-            FillRect(hdc, &full_rect, sel_bg);
+            FillRect(hdc, &row_rect, sel_bg);
             DeleteObject(sel_bg);
             SetTextColor(hdc, RGB(255, 255, 255));
-        } else if is_hero {
-            SetTextColor(hdc, RGB(160, 160, 180));
         } else {
+            // 交替行背景
+            if i % 2 == 0 {
+                let alt = CreateSolidBrush(RGB(34, 34, 39));
+                FillRect(hdc, &row_rect, alt);
+                DeleteObject(alt);
+            }
             SetTextColor(hdc, RGB(200, 200, 215));
         }
 
-        let text_wide: Vec<u16> = text.encode_utf16().collect();
-        let mut tr = RECT {
-            left: item_rect.left + 8,
-            top: item_rect.top + 2,
-            right: item_rect.right - 8,
-            bottom: item_rect.bottom - 2,
+        // 英雄名
+        let hero: Vec<u16> = row.hero_name.encode_utf16().collect();
+        let mut hr = RECT {
+            left: PADDING + 8, top: y + 2,
+            right: PADDING + COL_HERO, bottom: y + ROW_HEIGHT - 2,
         };
         windows::Win32::Graphics::Gdi::DrawTextW(
-            hdc,
-            &text_wide,
-            &mut tr,
-            windows::Win32::Graphics::Gdi::DT_LEFT
-                | windows::Win32::Graphics::Gdi::DT_VCENTER
+            hdc, &hero, &mut hr,
+            windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
                 | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
         );
 
-        y += if is_hero { HEADER_HEIGHT } else { ITEM_HEIGHT };
+        // 皮肤名
+        SetTextColor(hdc, if i == sel { RGB(220, 220, 255) } else { RGB(170, 170, 185) });
+        let skin: Vec<u16> = row.skin_name.encode_utf16().collect();
+        let mut sr = RECT {
+            left: PADDING + COL_HERO + COL_SEP, top: y + 2,
+            right: rect.right - PADDING - 8, bottom: y + ROW_HEIGHT - 2,
+        };
+        windows::Win32::Graphics::Gdi::DrawTextW(
+            hdc, &skin, &mut sr,
+            windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
+                | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+        );
+
+        y += ROW_HEIGHT;
     }
 
     SelectObject(hdc, old_font);
     windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
 }
-
-/// 确保 to_pinyin_initials 可访问
-pub(crate) use crate::scheme::to_pinyin_initials;
