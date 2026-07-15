@@ -1,6 +1,9 @@
 use anyhow::Result;
 use log::{info, warn};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 mod calibration;
 mod config;
@@ -10,6 +13,7 @@ mod ocr;
 mod scheme;
 mod search;
 mod sender;
+mod tray;
 mod window;
 
 #[derive(Debug, PartialEq)]
@@ -104,11 +108,38 @@ fn main() -> Result<()> {
     let mut detector = PageDetector::new();
     let mut kda_tracker = kda::KdaTracker::new()?;
     let cal = Arc::new(calibration::Calibration::new());
+    let running = Arc::new(AtomicBool::new(true));
 
-    // 搜索弹窗（保留，后续托盘菜单触发）
-    let _search_popup = search::SearchPopup::new(schemes.clone())?;
+    // 系统托盘
+    let tray_rx = tray::Tray::spawn(running.clone())?;
+
+    // 搜索弹窗
+    let search_popup = search::SearchPopup::new(schemes.clone())?;
+    {
+        let cal = cal.clone();
+        search_popup.set_callback(move |name: &str| {
+            cal.select(name);
+        });
+    }
 
     loop {
+        // 处理托盘命令
+        if let Ok(cmd) = tray_rx.try_recv() {
+            match cmd {
+                tray::TrayCommand::Calibrate => {
+                    search_popup.show();
+                }
+                tray::TrayCommand::OpenEditor => {
+                    info!("打开编辑器（TODO）");
+                }
+                tray::TrayCommand::Quit => {
+                    info!("退出");
+                    running.store(false, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
+
         let hwnd = match window::find_game_window(&cfg.game_window_title) {
             Some(h) => h,
             None => {
