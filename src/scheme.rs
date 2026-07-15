@@ -170,7 +170,7 @@ pub fn parse_skin_text(text: &str) -> (String, String) {
 
 /// 获取中文文本的拼音首字母
 /// "绯村剑心" -> "fcjx"
-fn to_pinyin_initials(text: &str) -> String {
+pub fn to_pinyin_initials(text: &str) -> String {
     text.chars()
         .filter_map(|c| {
             pinyin::Parser::new()
