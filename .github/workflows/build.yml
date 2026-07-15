@@ -23,17 +23,13 @@ jobs:
         shell: pwsh
         run: |
           $name = "faster-chant-rs"
-          $version = (Get-Date -Format "yyyyMMdd-HHmm")
-          if ($env:GITHUB_REF -match "^refs/tags/v") {
-            $version = $env:GITHUB_REF -replace "refs/tags/v", ""
-          }
 
           New-Item -ItemType Directory -Force -Path dist
 
-          # 1. 单文件 exe（直接下载用）
-          Copy-Item target\release\faster-chant-rs.exe "dist\$name-$version.exe"
+          # 1. 单文件 exe
+          Copy-Item target\release\faster-chant-rs.exe "dist\$name.exe"
 
-          # 2. zip 包（含 exe + 目录结构）
+          # 2. zip 包
           $dest = "dist\$name"
           New-Item -ItemType Directory -Force -Path $dest
           Copy-Item target\release\faster-chant-rs.exe $dest\
@@ -42,7 +38,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$dest\schemes"
           New-Item -ItemType Directory -Force -Path "$dest\logs"
 
-          Compress-Archive -Path $dest\* -DestinationPath "dist\$name-$version-x64.zip"
+          Compress-Archive -Path $dest\* -DestinationPath "dist\$name-x64.zip"
 
           echo "exe=$name-$version.exe" >> $env:GITHUB_ENV
           echo "zip=$name-$version-x64.zip" >> $env:GITHUB_ENV
