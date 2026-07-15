@@ -44,10 +44,10 @@ impl PageDetector {
             return GamePage::Confirming;
         }
 
-        // 2. 游戏中：KDA 区域有数字（TODO：等截图后实现）
-        // if window::check_kda(hwnd, cfg) {
-        //     return GamePage::InGame;
-        // }
+        // 2. 游戏中：顶部计时器区域特征（暗底白字）
+        if window::check_ingame(hwnd, cfg) {
+            return GamePage::InGame;
+        }
 
         // 3. 都不是 → 结算/主菜单/大厅
         GamePage::Inactive
