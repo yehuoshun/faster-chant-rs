@@ -19,7 +19,7 @@ jobs:
       - name: 编译
         run: cargo build --release
 
-      - name: 打包 (zip)
+      - name: 打包
         shell: pwsh
         run: |
           $name = "faster-chant-rs"
@@ -27,31 +27,39 @@ jobs:
           if ($env:GITHUB_REF -match "^refs/tags/v") {
             $version = $env:GITHUB_REF -replace "refs/tags/v", ""
           }
-          $zipName = "$name-$version-x64.zip"
+
+          New-Item -ItemType Directory -Force -Path dist
+
+          # 1. 单文件 exe（直接下载用）
+          Copy-Item target\release\faster-chant-rs.exe "dist\$name-$version.exe"
+
+          # 2. zip 包（含 exe + 目录结构）
           $dest = "dist\$name"
           New-Item -ItemType Directory -Force -Path $dest
-
           Copy-Item target\release\faster-chant-rs.exe $dest\
           Copy-Item README.md $dest\
           Copy-Item LICENSE $dest\
-
-          # 创建默认配置和方案
           New-Item -ItemType Directory -Force -Path "$dest\schemes"
           New-Item -ItemType Directory -Force -Path "$dest\logs"
 
-          Compress-Archive -Path dist\$name\* -DestinationPath dist\$zipName
-          echo "package=$zipName" >> $env:GITHUB_ENV
-          echo "package_path=dist\$zipName" >> $env:GITHUB_ENV
+          Compress-Archive -Path $dest\* -DestinationPath "dist\$name-$version-x64.zip"
+
+          echo "exe=$name-$version.exe" >> $env:GITHUB_ENV
+          echo "zip=$name-$version-x64.zip" >> $env:GITHUB_ENV
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: faster-chant-rs-windows
-          path: dist/*.zip
+          path: |
+            dist/*.exe
+            dist/*.zip
 
       - name: 发布到 Release (仅 tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.exe
+            dist/*.zip
           generate_release_notes: true
