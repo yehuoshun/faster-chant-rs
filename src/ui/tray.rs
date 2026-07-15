@@ -22,12 +22,14 @@ const WM_TRAYICON: u32 = 0x0400 + 1;
 const ID_TRAY_QUIT: u32 = 1001;
 const ID_TRAY_EDITOR: u32 = 1002;
 const ID_TRAY_CALIBRATE: u32 = 1003;
+const ID_TRAY_SETTINGS: u32 = 1004;
 
 /// 托盘命令
 #[derive(Debug, Clone)]
 pub enum TrayCommand {
     Calibrate,
     OpenEditor,
+    OpenSettings,
     Quit,
 }
 
@@ -177,17 +179,23 @@ unsafe fn show_tray_menu(hwnd: HWND) {
     mii.dwTypeData = PCWSTR(text.as_ptr());
     InsertMenuItemW(menu, 1, true, &mii);
 
+    // 设置
+    mii.wID = ID_TRAY_SETTINGS;
+    let text: Vec<u16> = "设置\0".encode_utf16().collect();
+    mii.dwTypeData = PCWSTR(text.as_ptr());
+    InsertMenuItemW(menu, 2, true, &mii);
+
     // 分隔线
     mii.fMask = MIIM_ID;
     mii.wID = 0;
-    InsertMenuItemW(menu, 2, true, &mii);
+    InsertMenuItemW(menu, 3, true, &mii);
 
     // 退出
     mii.fMask = MIIM_ID | MIIM_STRING;
     mii.wID = ID_TRAY_QUIT;
     let text: Vec<u16> = "退出\0".encode_utf16().collect();
     mii.dwTypeData = PCWSTR(text.as_ptr());
-    InsertMenuItemW(menu, 3, true, &mii);
+    InsertMenuItemW(menu, 4, true, &mii);
 
     // 显示菜单
     SetForegroundWindow(hwnd);
@@ -219,6 +227,9 @@ unsafe fn show_tray_menu(hwnd: HWND) {
         }
         ID_TRAY_EDITOR => {
             let _ = tx.send(TrayCommand::OpenEditor);
+        }
+        ID_TRAY_SETTINGS => {
+            let _ = tx.send(TrayCommand::OpenSettings);
         }
         ID_TRAY_QUIT => {
             let _ = tx.send(TrayCommand::Quit);

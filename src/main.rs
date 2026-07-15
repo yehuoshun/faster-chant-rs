@@ -10,6 +10,7 @@ mod config;
 mod core;
 mod editor;
 mod scheme;
+mod settings;
 mod ui;
 
 #[derive(Debug, PartialEq)]
@@ -136,9 +137,12 @@ fn main() -> Result<()> {
                 ui::tray::TrayCommand::OpenEditor => {
                     info!("打开编辑器");
                     let editor = editor::HeroEditor::new(schemes.all().into_iter().cloned().collect(), cfg.schemes_dir.clone());
-                    std::thread::spawn(move || {
-                        let _ = editor.run();
-                    });
+                    std::thread::spawn(move || { let _ = editor.run(); });
+                }
+                ui::tray::TrayCommand::OpenSettings => {
+                    info!("打开设置");
+                    let set = settings::SettingsEditor::new(cfg.clone());
+                    std::thread::spawn(move || { let _ = set.run(); });
                 }
                 ui::tray::TrayCommand::Quit => {
                     info!("退出");
