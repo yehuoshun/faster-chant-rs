@@ -13,8 +13,8 @@ pub struct AppConfig {
     pub gem_color: ColorRange,
     /// 皮肤名 OCR 区域（窗口比例）
     pub skin_name_region: RegionRatio,
-    /// 游戏内计时器锚点区域（窗口比例）
-    pub timer_region: RegionRatio,
+    /// 游戏内 KDA 锚点区域（窗口比例）
+    pub kda_region: RegionRatio,
     /// 英雄方案目录
     pub schemes_dir: PathBuf,
     /// 全局设置文件路径
@@ -71,12 +71,12 @@ impl Default for AppConfig {
                 w: 0.30,
                 h: 0.06,
             },
-            timer_region: RegionRatio {
-                // 比赛计时器：顶部中央，MM:SS 格式
-                x: 0.40,
+            kda_region: RegionRatio {
+                // KDA 数字：顶部中央偏右，0 / 0 / 1 格式
+                x: 0.35,
                 y: 0.00,
-                w: 0.20,
-                h: 0.05,
+                w: 0.30,
+                h: 0.04,
             },
             schemes_dir: base.join("schemes"),
             settings_path: base.join("settings.json"),
