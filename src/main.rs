@@ -1,15 +1,6 @@
 use anyhow::Result;
-use log::{debug, info, warn};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PeekMessageW,
-    RegisterClassW, TranslateMessage, CW_USEDEFAULT, MSG, PM_REMOVE, WM_DESTROY, WM_HOTKEY,
-    WNDCLASSW, WS_OVERLAPPEDWINDOW,
-};
+use log::{info, warn};
+use std::sync::Arc;
 
 mod calibration;
 mod config;
@@ -17,6 +8,7 @@ mod kda;
 mod ocr;
 mod scheme;
 mod search;
+mod sender;
 mod window;
 
 #[derive(Debug, PartialEq)]
@@ -41,7 +33,7 @@ impl PageDetector {
         }
     }
 
-    fn detect(&self, hwnd: HWND, cfg: &config::AppConfig) -> GamePage {
+    fn detect(&self, hwnd: windows::Win32::Foundation::HWND, cfg: &config::AppConfig) -> GamePage {
         if window::check_blue_gem(hwnd, cfg) {
             return GamePage::Confirming;
         }
@@ -54,7 +46,7 @@ impl PageDetector {
     fn transition(
         &mut self,
         new_page: GamePage,
-        hwnd: HWND,
+        hwnd: windows::Win32::Foundation::HWND,
         cfg: &config::AppConfig,
         ocr: &ocr::Ocr,
         schemes: &scheme::SchemeManager,
@@ -100,42 +92,18 @@ fn main() -> Result<()> {
     info!("faster-chant-rs 启动");
 
     let cfg = config::AppConfig::load()?;
-    let schemes = scheme::SchemeManager::load(&cfg.schemes_dir)?;
+    let schemes = Arc::new(scheme::SchemeManager::load(&cfg.schemes_dir)?);
     info!("已加载 {} 个英雄方案", schemes.all().len());
 
     let ocr = ocr::Ocr::new()?;
     let mut detector = PageDetector::new();
     let mut kda_tracker = kda::KdaTracker::new()?;
     let cal = Arc::new(calibration::Calibration::new());
-    let running = Arc::new(AtomicBool::new(true));
-    let schemes_arc = Arc::new(schemes);
 
-    // 搜索弹窗
-    let search_popup = search::SearchPopup::new(schemes_arc.clone())?;
-    {
-        let cal = cal.clone();
-        search_popup.set_callback(move |name: &str| {
-            cal.select(name);
-        });
-    }
+    // 搜索弹窗（保留，后续托盘菜单触发）
+    let _search_popup = search::SearchPopup::new(schemes.clone())?;
 
-    // 热键触发标志：热键线程设置，主循环消费
-    let hotkey_triggered = Arc::new(AtomicBool::new(false));
-
-    let _hotkey_thread = {
-        let running = running.clone();
-        let flag = hotkey_triggered.clone();
-        std::thread::spawn(move || {
-            create_hotkey_window(running, flag);
-        })
-    };
-
-    // 主循环：页面检测 + KDA 追踪
     loop {
-        if !running.load(Ordering::Relaxed) {
-            break;
-        }
-
         let hwnd = match window::find_game_window(&cfg.game_window_title) {
             Some(h) => h,
             None => {
@@ -151,105 +119,50 @@ fn main() -> Result<()> {
         };
 
         let page = detector.detect(hwnd, &cfg);
-        detector.transition(page, hwnd, &cfg, &ocr, &schemes_arc, &cal);
-
-        // 校准热键
-        if hotkey_triggered.swap(false, Ordering::Relaxed) {
-            search_popup.show();
-        }
+        detector.transition(page, hwnd, &cfg, &ocr, &schemes, &cal);
 
         if page == GamePage::InGame {
             match kda_tracker.tick(hwnd, &cfg) {
-                Ok(event) => match event {
-                    kda::KdaEvent::Kill => info!("⚔️ 击杀！"),
-                    kda::KdaEvent::Death => info!("💀 死亡"),
-                    kda::KdaEvent::Assist => info!("🤝 助攻"),
-                    kda::KdaEvent::GameStart => info!("🟢 新对局开始"),
-                    kda::KdaEvent::None => {}
-                },
+                Ok(event) => {
+                    let scheme_name = cal.current();
+                    if let Some(ref name) = scheme_name {
+                        // 获取当前方案
+                        let all_schemes = schemes.all();
+                        if let Some(scheme) = all_schemes.iter().find(|s| s.display_name == *name) {
+                            match event {
+                                kda::KdaEvent::Kill => {
+                                    if let Some(line) = sender::pick_random(&scheme.triggers.kill) {
+                                        info!("⚔️ 击杀 → {}", line);
+                                        let _ = sender::send_message(line);
+                                    }
+                                }
+                                kda::KdaEvent::Death => {
+                                    if let Some(line) = sender::pick_random(&scheme.triggers.death) {
+                                        info!("💀 死亡 → {}", line);
+                                        let _ = sender::send_message(line);
+                                    }
+                                }
+                                kda::KdaEvent::Assist => {
+                                    if let Some(line) = sender::pick_random(&scheme.triggers.assist) {
+                                        info!("🤝 助攻 → {}", line);
+                                        let _ = sender::send_message(line);
+                                    }
+                                }
+                                kda::KdaEvent::GameStart => {
+                                    if let Some(line) = sender::pick_random(&scheme.triggers.game_start) {
+                                        info!("🟢 开局 → {}", line);
+                                        let _ = sender::send_all_chat(line);
+                                    }
+                                }
+                                kda::KdaEvent::None => {}
+                            }
+                        }
+                    }
+                }
                 Err(e) => warn!("KDA 检测失败: {}", e),
             }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(cfg.poll_interval_ms));
-    }
-
-    Ok(())
-}
-
-/// 创建隐藏窗口，处理热键消息
-fn create_hotkey_window(
-    running: Arc<AtomicBool>,
-    hotkey_triggered: Arc<AtomicBool>,
-) {
-    unsafe {
-        let hinstance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
-
-        let class_name = windows::core::w!("FasterChantHotkeyWindow");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(hotkey_wndproc),
-            hInstance: hinstance,
-            lpszClassName: class_name,
-            ..Default::default()
-        };
-
-        RegisterClassW(&wc);
-
-        let hwnd = CreateWindowExW(
-            Default::default(),
-            class_name,
-            windows::core::w!("FasterChantHotkey"),
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            None,
-            None,
-            hinstance,
-            None,
-        );
-
-        if hwnd.0 == 0 {
-            warn!("创建热键窗口失败");
-            return;
-        }
-
-        // 注册热键
-        if let Err(e) = calibration::register_hotkey(hwnd) {
-            warn!("注册热键失败: {}", e);
-            return;
-        }
-
-        info!("热键窗口已创建，Ctrl+Shift+H 可校准");
-
-        let mut msg = MSG::default();
-        while running.load(Ordering::Relaxed) {
-            // 非阻塞消息循环
-            while PeekMessageW(&mut msg, hwnd, 0, 0, PM_REMOVE).as_bool() {
-                if msg.message == WM_HOTKEY && msg.wParam.0 == calibration::HOTKEY_CALIBRATE as usize
-                {
-                    hotkey_triggered.store(true, Ordering::Relaxed);
-                }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-}
-
-unsafe extern "system" fn hotkey_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    match msg {
-        WM_DESTROY => {
-            windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
-            windows::Win32::Foundation::LRESULT(0)
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
