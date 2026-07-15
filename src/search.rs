@@ -525,38 +525,46 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
     // ── 英雄列 ──
     let mut y = list_top;
     for (i, hero) in heroes.iter().enumerate() {
-        let row_rect = RECT {
-            left: PADDING, top: y,
-            right: PADDING + COL_HERO, bottom: y + ROW_HEIGHT,
-        };
+        // 计算该英雄占几行（选中英雄的多皮肤需要展开）
+        let row_count = if i == hero_sel { hero.skins.len().max(1) } else { 1 };
 
-        let is_active = focus == PanelFocus::Hero && i == hero_sel;
-        if is_active {
-            let sel_bg = CreateSolidBrush(RGB(70, 70, 160));
-            FillRect(hdc, &row_rect, sel_bg);
-            DeleteObject(sel_bg);
-            SetTextColor(hdc, RGB(255, 255, 255));
-        } else {
-            if i % 2 == 0 {
-                let alt = CreateSolidBrush(RGB(34, 34, 39));
-                FillRect(hdc, &row_rect, alt);
-                DeleteObject(alt);
+        for r in 0..row_count {
+            let row_rect = RECT {
+                left: PADDING, top: y,
+                right: PADDING + COL_HERO, bottom: y + ROW_HEIGHT,
+            };
+
+            let is_active = focus == PanelFocus::Hero && i == hero_sel && r == 0;
+            if is_active {
+                let sel_bg = CreateSolidBrush(RGB(70, 70, 160));
+                FillRect(hdc, &row_rect, sel_bg);
+                DeleteObject(sel_bg);
+                SetTextColor(hdc, RGB(255, 255, 255));
+            } else {
+                if (i + r) % 2 == 0 {
+                    let alt = CreateSolidBrush(RGB(34, 34, 39));
+                    FillRect(hdc, &row_rect, alt);
+                    DeleteObject(alt);
+                }
+                SetTextColor(hdc, RGB(200, 200, 215));
             }
-            SetTextColor(hdc, RGB(200, 200, 215));
+
+            // 只在第一行显示英雄名，其余行留空
+            if r == 0 {
+                let name: Vec<u16> = hero.name.encode_utf16().collect();
+                let mut nr = RECT {
+                    left: PADDING + 8, top: y + 2,
+                    right: PADDING + COL_HERO - 8, bottom: y + ROW_HEIGHT - 2,
+                };
+                windows::Win32::Graphics::Gdi::DrawTextW(
+                    hdc, &name, &mut nr,
+                    windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
+                        | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+                );
+            }
+
+            y += ROW_HEIGHT;
         }
-
-        let name: Vec<u16> = hero.name.encode_utf16().collect();
-        let mut nr = RECT {
-            left: PADDING + 8, top: y + 2,
-            right: PADDING + COL_HERO - 8, bottom: y + ROW_HEIGHT - 2,
-        };
-        windows::Win32::Graphics::Gdi::DrawTextW(
-            hdc, &name, &mut nr,
-            windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
-                | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
-        );
-
-        y += ROW_HEIGHT;
     }
 
     // ── 垂直分隔线 ──
@@ -570,15 +578,21 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
     FillRect(hdc, &vr, vline);
     DeleteObject(vline);
 
-    // ── 皮肤列：只显示当前选中英雄的皮肤 ──
+    // ── 皮肤列：从选中英雄的行开始 ──
     if let Some(hero) = heroes.get(hero_sel) {
-        let mut y = list_top;
+        // 计算选中英雄的 y 偏移（累计前面英雄的行数）
+        let mut skin_y = list_top;
+        for i in 0..hero_sel {
+            let row_count = if i == hero_sel { heroes[i].skins.len().max(1) } else { 1 };
+            skin_y += row_count as i32 * ROW_HEIGHT;
+        }
+
         for (i, skin) in hero.skins.iter().enumerate() {
             let row_rect = RECT {
                 left: PADDING + COL_HERO + COL_SEP,
-                top: y,
+                top: skin_y,
                 right: rect.right - PADDING,
-                bottom: y + ROW_HEIGHT,
+                bottom: skin_y + ROW_HEIGHT,
             };
 
             let is_active = focus == PanelFocus::Skin && i == skin_sel;
@@ -599,9 +613,9 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
             let skin_text: Vec<u16> = skin.skin_name.encode_utf16().collect();
             let mut sr = RECT {
                 left: row_rect.left + 8,
-                top: y + 2,
+                top: skin_y + 2,
                 right: row_rect.right - 8,
-                bottom: y + ROW_HEIGHT - 2,
+                bottom: skin_y + ROW_HEIGHT - 2,
             };
             windows::Win32::Graphics::Gdi::DrawTextW(
                 hdc, &skin_text, &mut sr,
@@ -609,7 +623,7 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
                     | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
             );
 
-            y += ROW_HEIGHT;
+            skin_y += ROW_HEIGHT;
         }
     }
 
