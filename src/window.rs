@@ -193,3 +193,133 @@ pub fn get_window_rect(hwnd: HWND) -> Option<RECT> {
         Some(rect)
     }
 }
+
+/// 检测游戏内状态：顶部计时器区域
+/// 思路：游戏内顶部有半透明黑底 + 白色计时器文字
+/// 确认页同一位置是英雄立绘（彩色），差异明显
+pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
+    let client_rect = match get_client_rect_screen(hwnd) {
+        Ok(r) => r,
+        Err(e) => {
+            debug!("获取窗口矩形失败: {}", e);
+            return false;
+        }
+    };
+
+    let width = (client_rect.right - client_rect.left) as u32;
+    let height = (client_rect.bottom - client_rect.top) as u32;
+
+    if width == 0 || height == 0 {
+        return false;
+    }
+
+    // 计时器区域：顶部中央，约 5% 高度
+    let region = &cfg.timer_region;
+    let x = (width as f64 * region.x) as i32;
+    let y = (height as f64 * region.y) as i32;
+    let w = (width as f64 * region.w).max(1.0) as i32;
+    let h = (height as f64 * region.h).max(1.0) as i32;
+
+    match capture_pixels(hwnd, client_rect, x, y, w, h) {
+        Ok(pixels) => {
+            let total = pixels.len();
+            if total == 0 {
+                return false;
+            }
+
+            // 统计暗色像素和亮色像素
+            let dark_count = pixels.iter()
+                .filter(|p| p.0 < 60 && p.1 < 60 && p.2 < 60)
+                .count();
+            let bright_count = pixels.iter()
+                .filter(|p| p.0 > 180 && p.1 > 180 && p.2 > 180)
+                .count();
+
+            let dark_ratio = dark_count as f64 / total as f64;
+            let bright_ratio = bright_count as f64 / total as f64;
+
+            debug!("游戏内检测: 暗色={:.0}%, 亮色={:.0}%",
+                dark_ratio * 100.0, bright_ratio * 100.0);
+
+            // 游戏内特征：大量暗色（半透明黑底）+ 少量亮色（白色文字）
+            // 确认页特征：彩色丰富，暗色和亮色都不极端
+            dark_ratio > 0.5 && bright_ratio > 0.02 && bright_ratio < 0.3
+        }
+        Err(e) => {
+            debug!("截取像素失败: {}", e);
+            false
+        }
+    }
+}
+
+/// 截取窗口区域像素，返回完整 RGBA 数据
+pub fn capture_window_region(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> anyhow::Result<image::RgbaImage> {
+    use windows::Win32::Graphics::Gdi::GetDC;
+    unsafe {
+        let hdc_window = GetDC(hwnd);
+        if hdc_window.0 == 0 {
+            anyhow::bail!("GetDC 失败");
+        }
+
+        let hdc_mem = CreateCompatibleDC(hdc_window);
+        if hdc_mem.0 == 0 {
+            ReleaseDC(hwnd, hdc_window);
+            anyhow::bail!("CreateCompatibleDC 失败");
+        }
+
+        let hbitmap = CreateCompatibleBitmap(hdc_window, width, height);
+        if hbitmap.0 == 0 {
+            DeleteDC(hdc_mem);
+            ReleaseDC(hwnd, hdc_window);
+            anyhow::bail!("CreateCompatibleBitmap 失败");
+        }
+
+        let old_bitmap = SelectObject(hdc_mem, hbitmap);
+        BitBlt(hdc_mem, 0, 0, width, height, hdc_window, x, y, SRCCOPY);
+
+        let mut bitmap_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [Default::default(); 1],
+        };
+
+        let pixel_count = (width * height) as usize;
+        let mut pixels: Vec<u8> = vec![0u8; pixel_count * 4];
+
+        GetDIBits(
+            hdc_mem,
+            hbitmap,
+            0,
+            height as u32,
+            Some(pixels.as_mut_ptr() as *mut _),
+            &mut bitmap_info,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(hdc_mem, old_bitmap);
+        DeleteObject(hbitmap);
+        DeleteDC(hdc_mem);
+        ReleaseDC(hwnd, hdc_window);
+
+        let img = image::RgbaImage::from_raw(width as u32, height as u32, pixels)
+            .context("创建 RgbaImage 失败")?;
+        Ok(img)
+    }
+}
