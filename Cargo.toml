@@ -27,7 +27,6 @@ image = "0.25"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
-dirs = "5"
 pinyin = "0.10"
 
 [profile.release]
