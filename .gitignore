@@ -1,4 +1,4 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+Cargo.locktest push.sh
