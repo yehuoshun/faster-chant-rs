@@ -11,6 +11,7 @@ authors = ["yehuoshun"]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Graphics_Gdi",
     "Win32_System_Threading",
     "Win32_Storage_Streams",
@@ -27,6 +28,7 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 dirs = "5"
+pinyin = "0.10"
 
 [profile.release]
 opt-level = 3
