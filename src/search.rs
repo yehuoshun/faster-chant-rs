@@ -31,6 +31,8 @@ pub struct ResultRow {
     pub hero_name: String,
     pub skin_name: String,
     pub display_name: String,
+    /// 该英雄共有几个皮肤
+    pub skin_count: usize,
 }
 
 pub type SearchCallback = Box<dyn Fn(&str) + Send + Sync>;
@@ -165,6 +167,15 @@ fn build_rows(schemes: &[&crate::scheme::HeroScheme], input: &str) -> Vec<Result
                     .then_with(|| a.skin_name.cmp(&b.skin_name))
             })
     });
+
+    // 计算每个英雄的皮肤数量
+    let mut hero_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for row in &rows {
+        *hero_counts.entry(row.hero_name.clone()).or_default() += 1;
+    }
+    for row in &mut rows {
+        row.skin_count = hero_counts.get(&row.hero_name).copied().unwrap_or(1);
+    }
 
     rows
 }
@@ -474,9 +485,14 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
             );
         }
 
-        // 皮肤名
+        // 皮肤名：只有多皮肤英雄才显示皮肤名，单皮肤且原皮则留空
+        let skin_text = if row.skin_name == "原皮" && row.skin_count <= 1 {
+            String::new()
+        } else {
+            row.skin_name.clone()
+        };
         SetTextColor(hdc, if i == sel { RGB(220, 220, 255) } else { RGB(170, 170, 185) });
-        let skin: Vec<u16> = row.skin_name.encode_utf16().collect();
+        let skin: Vec<u16> = skin_text.encode_utf16().collect();
         let mut sr = RECT {
             left: PADDING + COL_HERO + COL_SEP, top: y + 2,
             right: rect.right - PADDING - 8, bottom: y + ROW_HEIGHT - 2,
