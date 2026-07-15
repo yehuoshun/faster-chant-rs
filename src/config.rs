@@ -43,9 +43,10 @@ pub struct ColorRange {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let base = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("faster-chant-rs");
+        let base = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."));
 
         Self {
             game_window_title: "300英雄".to_string(),
