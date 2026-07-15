@@ -1,0 +1,57 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 编译
+        run: cargo build --release
+
+      - name: 打包 (zip)
+        shell: pwsh
+        run: |
+          $name = "faster-chant-rs"
+          $version = (Get-Date -Format "yyyyMMdd-HHmm")
+          if ($env:GITHUB_REF -match "^refs/tags/v") {
+            $version = $env:GITHUB_REF -replace "refs/tags/v", ""
+          }
+          $zipName = "$name-$version-x64.zip"
+          $dest = "dist\$name"
+          New-Item -ItemType Directory -Force -Path $dest
+
+          Copy-Item target\release\faster-chant-rs.exe $dest\
+          Copy-Item README.md $dest\
+          Copy-Item LICENSE $dest\
+
+          # 创建默认配置和方案
+          New-Item -ItemType Directory -Force -Path "$dest\schemes"
+          New-Item -ItemType Directory -Force -Path "$dest\logs"
+
+          Compress-Archive -Path dist\$name\* -DestinationPath dist\$zipName
+          echo "package=$zipName" >> $env:GITHUB_ENV
+          echo "package_path=dist\$zipName" >> $env:GITHUB_ENV
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: faster-chant-rs-windows
+          path: dist/*.zip
+
+      - name: 发布到 Release (仅 tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
