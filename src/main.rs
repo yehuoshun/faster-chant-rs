@@ -201,7 +201,7 @@ fn main() -> Result<()> {
                                 core::kda::KdaEvent::None => {}
                             }
 
-                            // 骚话定时器：每 60s 发一条，战斗后 5s 冷却
+                            // 骚话定时器
                             let now = std::time::Instant::now();
                             let cd = std::time::Duration::from_secs(cfg.taunt_cooldown_secs);
                             let interval = std::time::Duration::from_secs(cfg.taunt_interval_secs);
@@ -209,13 +209,30 @@ fn main() -> Result<()> {
                             if now.duration_since(last_combat) > cd
                                 && now.duration_since(last_taunt) > interval
                             {
-                                if let Some(boxes) = scheme.triggers.taunt.boxes.first() {
-                                    if let Some(line) = auto::sender::pick_random(boxes) {
-                                        info!("🗣️ 骚话 → {}", line);
-                                        let _ = auto::sender::send_message(line);
-                                        last_taunt = now;
+                                if cfg.burst_mode {
+                                    // 连发模式：逐条发送，间隔 burst_interval_ms
+                                    for boxes in &scheme.triggers.taunt.boxes {
+                                        for line in boxes {
+                                            if line.is_empty() {
+                                                continue;
+                                            }
+                                            info!("🗣️ 连发 → {}", line);
+                                            let _ = auto::sender::send_message(line);
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                cfg.burst_interval_ms,
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    // 单发：随机选一条
+                                    if let Some(boxes) = scheme.triggers.taunt.boxes.first() {
+                                        if let Some(line) = auto::sender::pick_random(boxes) {
+                                            info!("🗣️ 骚话 → {}", line);
+                                            let _ = auto::sender::send_message(line);
+                                        }
                                     }
                                 }
+                                last_taunt = now;
                             }
                         }
                     }

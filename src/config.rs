@@ -25,6 +25,10 @@ pub struct AppConfig {
     pub taunt_interval_secs: u64,
     /// 战斗事件后骚话冷却（秒）
     pub taunt_cooldown_secs: u64,
+    /// 连发模式
+    pub burst_mode: bool,
+    /// 连发间隔（毫秒）
+    pub burst_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +100,8 @@ impl Default for AppConfig {
             settings_path: base.join("settings.json"),
             taunt_interval_secs: 60,
             taunt_cooldown_secs: 5,
+            burst_mode: false,
+            burst_interval_ms: 1000,
         }
     }
 }
