@@ -194,9 +194,9 @@ pub fn get_window_rect(hwnd: HWND) -> Option<RECT> {
     }
 }
 
-/// 检测游戏内状态：顶部 KDA 区域
-/// 游戏内顶部有半透明黑底 + 白色 KDA 数字（0 / 0 / 1）
-/// 确认页同一位置是英雄立绘（彩色），差异明显
+/// 检测游戏内状态：右下角小地图
+/// 小地图上有彩色圆点（红/黄/蓝/绿），确认页和结算页都没有
+/// 统计非黑非灰像素占比，超过阈值即判定为游戏中
 pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
     let client_rect = match get_client_rect_screen(hwnd) {
         Ok(r) => r,
@@ -213,7 +213,7 @@ pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
         return false;
     }
 
-    let region = &cfg.kda_region;
+    let region = &cfg.minimap_region;
     let x = (width as f64 * region.x) as i32;
     let y = (height as f64 * region.y) as i32;
     let w = (width as f64 * region.w).max(1.0) as i32;
@@ -226,25 +226,27 @@ pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
                 return false;
             }
 
-            // 游戏内特征：暗色背景（半透明黑底）+ 亮色数字（白色 KDA）
-            let dark_count = pixels.iter()
-                .filter(|p| p.0 < 60 && p.1 < 60 && p.2 < 60)
+            // 统计彩色像素（非黑非灰非白）
+            // 小地图：地形是深色，但英雄/小兵/塔的圆点是彩色的
+            let colored = pixels.iter()
+                .filter(|p| {
+                    let max = p.0.max(p.1).max(p.2);
+                    let min = p.0.min(p.1).min(p.2);
+                    let saturation = max.saturating_sub(min);
+                    // 饱和度 > 40 且亮度不过低 = 彩色圆点
+                    saturation > 40 && max > 50
+                })
                 .count();
-            let bright_count = pixels.iter()
-                .filter(|p| p.0 > 180 && p.1 > 180 && p.2 > 180)
-                .count();
 
-            let dark_ratio = dark_count as f64 / total as f64;
-            let bright_ratio = bright_count as f64 / total as f64;
+            let ratio = colored as f64 / total as f64;
+            debug!("小地图检测: 彩色像素={:.1}%", ratio * 100.0);
 
-            debug!("KDA区域检测: 暗色={:.0}%, 亮色={:.0}%",
-                dark_ratio * 100.0, bright_ratio * 100.0);
-
-            // 暗底白字特征：大量暗色 + 少量亮色（KDA 数字）
-            dark_ratio > 0.5 && bright_ratio > 0.02 && bright_ratio < 0.3
+            // 小地图上至少有少量彩色圆点（英雄、小兵、塔）
+            // 确认页同一位置是英雄立绘或黑色背景，不会有这种离散彩色点
+            ratio > 0.01 && ratio < 0.15
         }
         Err(e) => {
-            debug!("截取像素失败: {}", e);
+            debug!("截取小地图失败: {}", e);
             false
         }
     }
