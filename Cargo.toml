@@ -1,0 +1,19 @@
+[package]
+name = "faster-chant-rs"
+version = "0.1.0"
+edition = "2021"
+description = "300英雄快捷喊话工具 Rust 重制版 — 键盘钩子 + OCR 事件检测 + 悬浮穿透面板"
+license = "MIT"
+repository = "https://github.com/yehuoshun/faster-chant-rs"
+authors = ["yehuoshun"]
+
+# Windows-only: 大量 Win32 API 调用
+# 后续如需跨平台迁移可拆分 platform 模块
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
