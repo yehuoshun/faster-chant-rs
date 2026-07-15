@@ -5,16 +5,11 @@ use std::sync::{
     Arc,
 };
 
-mod calibration;
+mod auto;
 mod config;
-mod defaults;
-mod kda;
-mod ocr;
+mod core;
 mod scheme;
-mod search;
-mod sender;
-mod tray;
-mod window;
+mod ui;
 
 #[derive(Debug, PartialEq)]
 enum GamePage {
@@ -39,10 +34,10 @@ impl PageDetector {
     }
 
     fn detect(&self, hwnd: windows::Win32::Foundation::HWND, cfg: &config::AppConfig) -> GamePage {
-        if window::check_blue_gem(hwnd, cfg) {
+        if core::window::check_blue_gem(hwnd, cfg) {
             return GamePage::Confirming;
         }
-        if window::check_ingame(hwnd, cfg) {
+        if core::window::check_ingame(hwnd, cfg) {
             return GamePage::InGame;
         }
         GamePage::Inactive
@@ -53,9 +48,9 @@ impl PageDetector {
         new_page: GamePage,
         hwnd: windows::Win32::Foundation::HWND,
         cfg: &config::AppConfig,
-        ocr: &ocr::Ocr,
-        schemes: &scheme::SchemeManager,
-        cal: &calibration::Calibration,
+        ocr: &core::ocr::Ocr,
+        schemes: &scheme::scheme::scheme::SchemeManager,
+        cal: &auto::calibration::Calibration,
     ) {
         if new_page == self.prev {
             return;
@@ -99,22 +94,22 @@ fn main() -> Result<()> {
     let cfg = config::AppConfig::load()?;
 
     // 首次启动生成默认方案
-    defaults::generate_defaults(&cfg.schemes_dir)?;
+    scheme::defaults::generate_defaults(&cfg.schemes_dir)?;
 
-    let schemes = Arc::new(scheme::SchemeManager::load(&cfg.schemes_dir)?);
+    let schemes = Arc::new(scheme::scheme::scheme::scheme::SchemeManager::load(&cfg.schemes_dir)?);
     info!("已加载 {} 个英雄方案", schemes.all().len());
 
-    let ocr = ocr::Ocr::new()?;
+    let ocr = core::ocr::Ocr::new()?;
     let mut detector = PageDetector::new();
-    let mut kda_tracker = kda::KdaTracker::new()?;
-    let cal = Arc::new(calibration::Calibration::new());
+    let mut kda_tracker = core::kda::KdaTracker::new()?;
+    let cal = Arc::new(auto::calibration::Calibration::new());
     let running = Arc::new(AtomicBool::new(true));
 
     // 系统托盘
-    let tray_rx = tray::Tray::spawn(running.clone())?;
+    let tray_rx = ui::tray::Tray::spawn(running.clone())?;
 
     // 搜索弹窗
-    let search_popup = search::SearchPopup::new(schemes.clone())?;
+    let search_popup = ui::search::SearchPopup::new(schemes.clone())?;
     {
         let cal = cal.clone();
         search_popup.set_callback(move |name: &str| {
@@ -126,13 +121,13 @@ fn main() -> Result<()> {
         // 处理托盘命令
         if let Ok(cmd) = tray_rx.try_recv() {
             match cmd {
-                tray::TrayCommand::Calibrate => {
+                ui::tray::TrayCommand::Calibrate => {
                     search_popup.show();
                 }
-                tray::TrayCommand::OpenEditor => {
+                ui::tray::TrayCommand::OpenEditor => {
                     info!("打开编辑器（TODO）");
                 }
-                tray::TrayCommand::Quit => {
+                ui::tray::TrayCommand::Quit => {
                     info!("退出");
                     running.store(false, Ordering::Relaxed);
                     break;
@@ -140,7 +135,7 @@ fn main() -> Result<()> {
             }
         }
 
-        let hwnd = match window::find_game_window(&cfg.game_window_title) {
+        let hwnd = match core::window::find_game_window(&cfg.game_window_title) {
             Some(h) => h,
             None => {
                 if detector.prev != GamePage::Inactive {
@@ -166,31 +161,31 @@ fn main() -> Result<()> {
                         let all_schemes = schemes.all();
                         if let Some(scheme) = all_schemes.iter().find(|s| s.display_name == *name) {
                             match event {
-                                kda::KdaEvent::Kill => {
-                                    if let Some(line) = sender::pick_random(&scheme.triggers.kill) {
+                                core::kda::KdaEvent::Kill => {
+                                    if let Some(line) = auto::sender::pick_random(&scheme.triggers.kill) {
                                         info!("⚔️ 击杀 → {}", line);
-                                        let _ = sender::send_message(line);
+                                        let _ = auto::sender::send_message(line);
                                     }
                                 }
-                                kda::KdaEvent::Death => {
-                                    if let Some(line) = sender::pick_random(&scheme.triggers.death) {
+                                core::kda::KdaEvent::Death => {
+                                    if let Some(line) = auto::sender::pick_random(&scheme.triggers.death) {
                                         info!("💀 死亡 → {}", line);
-                                        let _ = sender::send_message(line);
+                                        let _ = auto::sender::send_message(line);
                                     }
                                 }
-                                kda::KdaEvent::Assist => {
-                                    if let Some(line) = sender::pick_random(&scheme.triggers.assist) {
+                                core::kda::KdaEvent::Assist => {
+                                    if let Some(line) = auto::sender::pick_random(&scheme.triggers.assist) {
                                         info!("🤝 助攻 → {}", line);
-                                        let _ = sender::send_message(line);
+                                        let _ = auto::sender::send_message(line);
                                     }
                                 }
-                                kda::KdaEvent::GameStart => {
-                                    if let Some(line) = sender::pick_random(&scheme.triggers.game_start) {
+                                core::kda::KdaEvent::GameStart => {
+                                    if let Some(line) = auto::sender::pick_random(&scheme.triggers.game_start) {
                                         info!("🟢 开局 → {}", line);
-                                        let _ = sender::send_all_chat(line);
+                                        let _ = auto::sender::send_all_chat(line);
                                     }
                                 }
-                                kda::KdaEvent::None => {}
+                                core::kda::KdaEvent::None => {}
                             }
                         }
                     }
