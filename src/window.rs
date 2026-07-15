@@ -194,8 +194,8 @@ pub fn get_window_rect(hwnd: HWND) -> Option<RECT> {
     }
 }
 
-/// 检测游戏内状态：顶部计时器区域
-/// 思路：游戏内顶部有半透明黑底 + 白色计时器文字
+/// 检测游戏内状态：顶部 KDA 区域
+/// 游戏内顶部有半透明黑底 + 白色 KDA 数字（0 / 0 / 1）
 /// 确认页同一位置是英雄立绘（彩色），差异明显
 pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
     let client_rect = match get_client_rect_screen(hwnd) {
@@ -213,8 +213,7 @@ pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
         return false;
     }
 
-    // 计时器区域：顶部中央，约 5% 高度
-    let region = &cfg.timer_region;
+    let region = &cfg.kda_region;
     let x = (width as f64 * region.x) as i32;
     let y = (height as f64 * region.y) as i32;
     let w = (width as f64 * region.w).max(1.0) as i32;
@@ -227,7 +226,7 @@ pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
                 return false;
             }
 
-            // 统计暗色像素和亮色像素
+            // 游戏内特征：暗色背景（半透明黑底）+ 亮色数字（白色 KDA）
             let dark_count = pixels.iter()
                 .filter(|p| p.0 < 60 && p.1 < 60 && p.2 < 60)
                 .count();
@@ -238,11 +237,10 @@ pub fn check_ingame(hwnd: HWND, cfg: &AppConfig) -> bool {
             let dark_ratio = dark_count as f64 / total as f64;
             let bright_ratio = bright_count as f64 / total as f64;
 
-            debug!("游戏内检测: 暗色={:.0}%, 亮色={:.0}%",
+            debug!("KDA区域检测: 暗色={:.0}%, 亮色={:.0}%",
                 dark_ratio * 100.0, bright_ratio * 100.0);
 
-            // 游戏内特征：大量暗色（半透明黑底）+ 少量亮色（白色文字）
-            // 确认页特征：彩色丰富，暗色和亮色都不极端
+            // 暗底白字特征：大量暗色 + 少量亮色（KDA 数字）
             dark_ratio > 0.5 && bright_ratio > 0.02 && bright_ratio < 0.3
         }
         Err(e) => {
