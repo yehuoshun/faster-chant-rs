@@ -5,9 +5,54 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_RETURN, VK_SHIFT, VK_V,
 };
 
-/// 发送消息到游戏聊天框
-/// 流程：Enter（打开聊天框）→ Ctrl+V（粘贴）→ Enter（发送）
+/// 游戏聊天框最大字符数（中文约 50-60 字）
+const MAX_CHAT_LEN: usize = 50;
+
+/// 发送消息，超长自动拆分多条
 pub fn send_message(text: &str) -> Result<()> {
+    for chunk in split_text(text, MAX_CHAT_LEN) {
+        send_single(&chunk)?;
+    }
+    Ok(())
+}
+
+/// 发送到全体频道
+pub fn send_all_chat(text: &str) -> Result<()> {
+    for chunk in split_text(text, MAX_CHAT_LEN) {
+        send_all_single(&chunk)?;
+    }
+    Ok(())
+}
+
+/// 拆分长文本
+fn split_text(text: &str, max_len: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_len {
+        return vec![text.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let end = (start + max_len).min(chars.len());
+        // 尽量在标点处断句
+        let mut split_at = end;
+        if split_at < chars.len() {
+            for i in (start..split_at).rev() {
+                if "，。！？；：、,.!?;:".contains(chars[i]) {
+                    split_at = i + 1;
+                    break;
+                }
+            }
+        }
+        chunks.push(chars[start..split_at].iter().collect());
+        start = split_at;
+    }
+    chunks
+}
+
+/// 发送单条消息
+fn send_single(text: &str) -> Result<()> {
     debug!("发送消息: {}", text);
 
     // 1. 复制到剪贴板
@@ -35,8 +80,8 @@ pub fn send_message(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// 发送到全体频道（Enter → Shift+Enter → Ctrl+V → Enter）
-pub fn send_all_chat(text: &str) -> Result<()> {
+/// 发送单条全体消息
+fn send_all_single(text: &str) -> Result<()> {
     debug!("发送全体消息: {}", text);
 
     set_clipboard(text)?;
@@ -131,5 +176,23 @@ mod tests {
     #[test]
     fn test_pick_random_empty() {
         assert!(pick_random(&[]).is_none());
+    }
+
+    #[test]
+    fn test_split_text_short() {
+        let result = split_text("你好", 50);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "你好");
+    }
+
+    #[test]
+    fn test_split_text_long() {
+        let text = "  ".repeat(60);
+        let result = split_text(&text, 50);
+        assert!(result.len() >= 2);
+        // 每段不超过 50
+        for chunk in &result {
+            assert!(chunk.chars().count() <= 50);
+        }
     }
 }
