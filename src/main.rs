@@ -16,6 +16,7 @@ mod config;
 mod kda;
 mod ocr;
 mod scheme;
+mod search;
 mod window;
 
 #[derive(Debug, PartialEq)]
@@ -109,6 +110,15 @@ fn main() -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let schemes_arc = Arc::new(schemes);
 
+    // 搜索弹窗
+    let search_popup = search::SearchPopup::new(schemes_arc.clone())?;
+    {
+        let cal = cal.clone();
+        search_popup.set_callback(move |name: &str| {
+            cal.select(name);
+        });
+    }
+
     // 热键触发标志：热键线程设置，主循环消费
     let hotkey_triggered = Arc::new(AtomicBool::new(false));
 
@@ -143,13 +153,9 @@ fn main() -> Result<()> {
         let page = detector.detect(hwnd, &cfg);
         detector.transition(page, hwnd, &cfg, &ocr, &schemes_arc, &cal);
 
-        // 校准热键：直接触发，不限页面
+        // 校准热键
         if hotkey_triggered.swap(false, Ordering::Relaxed) {
-            let results = cal.search("", &schemes_arc);
-            info!("可用方案 ({})：", results.len());
-            for (i, name) in results.iter().enumerate() {
-                info!("  {}. {}", i + 1, name);
-            }
+            search_popup.show();
         }
 
         if page == GamePage::InGame {
