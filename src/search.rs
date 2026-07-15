@@ -13,26 +13,31 @@ use windows::Win32::UI::WindowsAndMessaging::{
     RegisterClassW, SetWindowPos, ShowWindow, WNDCLASSW, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, HWND_TOPMOST, SW_HIDE, SW_SHOW, WM_CHAR, WM_CREATE, WM_DESTROY,
     WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_NCHITTEST, WM_PAINT, WS_EX_TOPMOST,
-    WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE, HTCAPTION, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP,
+    WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE, HTCAPTION, VK_DOWN, VK_ESCAPE, VK_LEFT,
+    VK_RETURN, VK_RIGHT, VK_UP,
 };
 
-const WINDOW_WIDTH: i32 = 360;
-const WINDOW_HEIGHT: i32 = 420;
+const WINDOW_WIDTH: i32 = 340;
+const WINDOW_HEIGHT: i32 = 380;
 const PADDING: i32 = 12;
 const INPUT_HEIGHT: i32 = 32;
 const HEADER_HEIGHT: i32 = 22;
-const ROW_HEIGHT: i32 = 24;
-const COL_HERO: i32 = 100;
-const COL_SEP: i32 = 20;
+const ROW_HEIGHT: i32 = 26;
+const COL_HERO: i32 = 110;
+const COL_SEP: i32 = 16;
+const SEP_WIDTH: i32 = 1;
 
-/// 搜索结果行
+/// 英雄 + 皮肤
 #[derive(Debug, Clone)]
-pub struct ResultRow {
-    pub hero_name: String,
-    pub skin_name: String,
-    pub display_name: String,
-    /// 该英雄共有几个皮肤
-    pub skin_count: usize,
+struct HeroItem {
+    name: String,
+    skins: Vec<SkinItem>,
+}
+
+#[derive(Debug, Clone)]
+struct SkinItem {
+    display_name: String,
+    skin_name: String,
 }
 
 pub type SearchCallback = Box<dyn Fn(&str) + Send + Sync>;
@@ -40,33 +45,44 @@ pub type SearchCallback = Box<dyn Fn(&str) + Send + Sync>;
 pub struct SearchPopup {
     hwnd: HWND,
     input: Arc<Mutex<String>>,
-    rows: Arc<Mutex<Vec<ResultRow>>>,
-    selected: Arc<Mutex<usize>>,
+    heroes: Arc<Mutex<Vec<HeroItem>>>,
+    hero_sel: Arc<Mutex<usize>>,
+    skin_sel: Arc<Mutex<usize>>,
+    /// 光标在左边（英雄）还是右边（皮肤）
+    focus: Arc<Mutex<PanelFocus>>,
     schemes: Arc<SchemeManager>,
     on_select: Arc<Mutex<Option<SearchCallback>>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum PanelFocus {
+    Hero,
+    Skin,
 }
 
 impl SearchPopup {
     pub fn new(schemes: Arc<SchemeManager>) -> Result<Self> {
         let input = Arc::new(Mutex::new(String::new()));
-        let rows = Arc::new(Mutex::new(Vec::new()));
-        let selected = Arc::new(Mutex::new(0usize));
+        let heroes = Arc::new(Mutex::new(Vec::new()));
+        let hero_sel = Arc::new(Mutex::new(0usize));
+        let skin_sel = Arc::new(Mutex::new(0usize));
+        let focus = Arc::new(Mutex::new(PanelFocus::Hero));
         let on_select: Arc<Mutex<Option<SearchCallback>>> = Arc::new(Mutex::new(None));
 
-        let hwnd = create_window(&input, &rows, &selected, &on_select, schemes.clone())?;
+        let hwnd = create_window(
+            &input, &heroes, &hero_sel, &skin_sel, &focus, &on_select, schemes.clone(),
+        )?;
 
         Ok(Self {
-            hwnd,
-            input,
-            rows,
-            selected,
-            schemes,
-            on_select,
+            hwnd, input, heroes, hero_sel, skin_sel, focus, schemes, on_select,
         })
     }
 
     pub fn show(&self) {
         *self.input.lock().unwrap() = String::new();
+        *self.hero_sel.lock().unwrap() = 0;
+        *self.skin_sel.lock().unwrap() = 0;
+        *self.focus.lock().unwrap() = PanelFocus::Hero;
         self.refresh("");
 
         let screen_w = unsafe {
@@ -84,12 +100,7 @@ impl SearchPopup {
 
         unsafe {
             SetWindowPos(
-                self.hwnd,
-                HWND_TOPMOST,
-                x,
-                y,
-                WINDOW_WIDTH,
-                WINDOW_HEIGHT,
+                self.hwnd, HWND_TOPMOST, x, y, WINDOW_WIDTH, WINDOW_HEIGHT,
                 windows::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW,
             );
             ShowWindow(self.hwnd, SW_SHOW);
@@ -107,9 +118,9 @@ impl SearchPopup {
 
     fn refresh(&self, input: &str) {
         let schemes = self.schemes.all();
-        let rows = build_rows(&schemes, input);
-        *self.rows.lock().unwrap() = rows;
-        *self.selected.lock().unwrap() = 0;
+        *self.heroes.lock().unwrap() = group_heroes(&schemes, input);
+        *self.hero_sel.lock().unwrap() = 0;
+        *self.skin_sel.lock().unwrap() = 0;
     }
 }
 
@@ -119,89 +130,71 @@ impl Drop for SearchPopup {
     }
 }
 
-/// 搜索匹配 → 扁平行列表
-fn build_rows(schemes: &[&crate::scheme::HeroScheme], input: &str) -> Vec<ResultRow> {
+fn group_heroes(
+    schemes: &[&crate::scheme::HeroScheme],
+    input: &str,
+) -> Vec<HeroItem> {
     let input = input.to_lowercase();
-    let mut rows: Vec<ResultRow> = Vec::new();
+    let mut hero_map: HashMap<String, Vec<SkinItem>> = HashMap::new();
 
     for scheme in schemes {
         if !input.is_empty() {
             let pinyin = crate::scheme::to_pinyin_initials(&scheme.hero_name).to_lowercase();
-            let skin_pinyin = scheme
-                .skin_name
-                .as_deref()
-                .map(|s| crate::scheme::to_pinyin_initials(s).to_lowercase());
             let matched = scheme.hero_name.contains(&input)
                 || pinyin.contains(&input)
-                || scheme.display_name.contains(&input)
-                || skin_pinyin
-                    .as_ref()
-                    .map(|sp| sp.contains(&input))
-                    .unwrap_or(false)
-                || scheme
-                    .skin_name
-                    .as_deref()
-                    .map(|s| s.contains(&input))
-                    .unwrap_or(false);
+                || scheme.skin_name.as_deref().map(|s| s.contains(&input)).unwrap_or(false);
             if !matched {
                 continue;
             }
         }
-
-        rows.push(ResultRow {
-            hero_name: scheme.hero_name.clone(),
-            skin_name: scheme.skin_name.clone().unwrap_or_else(|| "原皮".to_string()),
+        let entry = hero_map.entry(scheme.hero_name.clone()).or_default();
+        entry.push(SkinItem {
             display_name: scheme.display_name.clone(),
+            skin_name: scheme.skin_name.clone().unwrap_or_else(|| "原皮".to_string()),
         });
     }
 
-    // 排序：英雄名 > 皮肤名（原皮优先）
-    rows.sort_by(|a, b| {
-        a.hero_name
-            .cmp(&b.hero_name)
-            .then_with(|| {
-                let a_is_default = a.skin_name == "原皮";
-                let b_is_default = b.skin_name == "原皮";
-                b_is_default
-                    .cmp(&a_is_default)
-                    .then_with(|| a.skin_name.cmp(&b.skin_name))
-            })
-    });
+    let mut heroes: Vec<HeroItem> = hero_map
+        .into_iter()
+        .map(|(name, mut skins)| {
+            skins.sort_by(|a, b| {
+                let a_def = a.skin_name == "原皮";
+                let b_def = b.skin_name == "原皮";
+                b_def.cmp(&a_def).then_with(|| a.skin_name.cmp(&b.skin_name))
+            });
+            HeroItem { name, skins }
+        })
+        .collect();
 
-    // 计算每个英雄的皮肤数量
-    let mut hero_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for row in &rows {
-        *hero_counts.entry(row.hero_name.clone()).or_default() += 1;
-    }
-    for row in &mut rows {
-        row.skin_count = hero_counts.get(&row.hero_name).copied().unwrap_or(1);
-    }
-
-    rows
+    heroes.sort_by(|a, b| a.name.cmp(&b.name));
+    heroes
 }
 
-// ── 窗口创建 ──
+// ── 窗口 ──
 
 fn create_window(
     input: &Arc<Mutex<String>>,
-    rows: &Arc<Mutex<Vec<ResultRow>>>,
-    selected: &Arc<Mutex<usize>>,
+    heroes: &Arc<Mutex<Vec<HeroItem>>>,
+    hero_sel: &Arc<Mutex<usize>>,
+    skin_sel: &Arc<Mutex<usize>>,
+    focus: &Arc<Mutex<PanelFocus>>,
     on_select: &Arc<Mutex<Option<SearchCallback>>>,
     schemes: Arc<SchemeManager>,
 ) -> Result<HWND> {
     unsafe {
-        let hinstance =
-            windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
+        let hinstance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
         let class_name = windows::core::w!("FasterChantSearchPopup");
 
         let userdata = Box::new(SearchWindowData {
             input: input.clone(),
-            rows: rows.clone(),
-            selected: selected.clone(),
+            heroes: heroes.clone(),
+            hero_sel: hero_sel.clone(),
+            skin_sel: skin_sel.clone(),
+            focus: focus.clone(),
             on_select: on_select.clone(),
             schemes,
         });
-        let userdata_ptr = Box::into_raw(userdata);
+        let ptr = Box::into_raw(userdata);
 
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
@@ -211,7 +204,6 @@ fn create_window(
             lpszClassName: class_name,
             ..Default::default()
         };
-
         RegisterClassW(&wc);
 
         let hwnd = CreateWindowExW(
@@ -219,14 +211,9 @@ fn create_window(
             class_name,
             windows::core::w!("切换英雄"),
             WS_POPUP | WS_VISIBLE,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
-            None,
-            None,
-            hinstance,
-            Some(userdata_ptr as *const _ as _),
+            CW_USEDEFAULT, CW_USEDEFAULT, WINDOW_WIDTH, WINDOW_HEIGHT,
+            None, None, hinstance,
+            Some(ptr as *const _ as _),
         );
 
         if hwnd.0 == 0 {
@@ -238,8 +225,10 @@ fn create_window(
 
 struct SearchWindowData {
     input: Arc<Mutex<String>>,
-    rows: Arc<Mutex<Vec<ResultRow>>>,
-    selected: Arc<Mutex<usize>>,
+    heroes: Arc<Mutex<Vec<HeroItem>>>,
+    hero_sel: Arc<Mutex<usize>>,
+    skin_sel: Arc<Mutex<usize>>,
+    focus: Arc<Mutex<PanelFocus>>,
     on_select: Arc<Mutex<Option<SearchCallback>>>,
     schemes: Arc<SchemeManager>,
 }
@@ -247,53 +236,108 @@ struct SearchWindowData {
 // ── 窗口过程 ──
 
 unsafe extern "system" fn search_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
+    hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM,
 ) -> LRESULT {
     match msg {
         WM_CREATE => {
             let cs = &*(lparam.0 as *const windows::Win32::UI::WindowsAndMessaging::CREATESTRUCTW);
             windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
-                hwnd,
-                windows::Win32::UI::WindowsAndMessaging::GWL_USERDATA,
-                cs.lpCreateParams as isize,
+                hwnd, windows::Win32::UI::WindowsAndMessaging::GWL_USERDATA, cs.lpCreateParams as isize,
             );
             LRESULT(0)
         }
         WM_NCHITTEST => LRESULT(HTCAPTION as isize),
         WM_ERASEBKGND => LRESULT(1),
-        WM_PAINT => { let data = get_data(hwnd); paint(hwnd, &data); LRESULT(0) }
+        WM_PAINT => { let d = get_data(hwnd); paint(hwnd, &d); LRESULT(0) }
         WM_CHAR => {
-            let data = get_data(hwnd);
+            let d = get_data(hwnd);
             let c = char::from_u32(wparam.0 as u32).unwrap_or('\0');
-            if c == '\u{8}' {
-                data.input.lock().unwrap().pop();
-            } else if c == '\u{1b}' {
+            if c == '\u{1b}' {
                 hide_window(hwnd);
                 return LRESULT(0);
-            } else if c == '\r' {
-                confirm_selection(&data);
+            }
+            if c == '\r' {
+                handle_enter(&d);
                 return LRESULT(0);
+            }
+            if c == '\u{8}' {
+                d.input.lock().unwrap().pop();
             } else if c.is_ascii_graphic() || c == ' ' {
-                data.input.lock().unwrap().push(c);
+                d.input.lock().unwrap().push(c);
             } else {
                 return LRESULT(0);
             }
-            update_search(&data);
+            update_search(&d);
             LRESULT(0)
         }
         WM_KEYDOWN => {
-            let data = get_data(hwnd);
+            let d = get_data(hwnd);
             let vk = wparam.0 as u32;
-            let len = data.rows.lock().unwrap().len();
-            let mut sel = data.selected.lock().unwrap();
-            match vk {
-                VK_UP if *sel > 0 => { *sel -= 1; InvalidateRect(hwnd, None, true); }
-                VK_DOWN if *sel + 1 < len => { *sel += 1; InvalidateRect(hwnd, None, true); }
-                VK_RETURN => { confirm_selection(&data); }
-                VK_ESCAPE => { hide_window(hwnd); }
+            let focus = d.focus.lock().unwrap().clone();
+            let heroes = d.heroes.lock().unwrap();
+
+            match (focus, vk) {
+                // 英雄列
+                (PanelFocus::Hero, VK_UP) => {
+                    let mut sel = d.hero_sel.lock().unwrap();
+                    if *sel > 0 { *sel -= 1; *d.skin_sel.lock().unwrap() = 0; }
+                    InvalidateRect(hwnd, None, true);
+                }
+                (PanelFocus::Hero, VK_DOWN) => {
+                    let mut sel = d.hero_sel.lock().unwrap();
+                    if *sel + 1 < heroes.len() { *sel += 1; *d.skin_sel.lock().unwrap() = 0; }
+                    InvalidateRect(hwnd, None, true);
+                }
+                (PanelFocus::Hero, VK_RIGHT) => {
+                    *d.focus.lock().unwrap() = PanelFocus::Skin;
+                    InvalidateRect(hwnd, None, true);
+                }
+                (PanelFocus::Hero, VK_RETURN) => {
+                    let sel = *d.hero_sel.lock().unwrap();
+                    if let Some(hero) = heroes.get(sel) {
+                        if hero.skins.len() == 1 {
+                            // 单皮肤，直接选中
+                            confirm(&hero.skins[0].display_name, &d);
+                        } else {
+                            // 多皮肤，跳到右边
+                            *d.focus.lock().unwrap() = PanelFocus::Skin;
+                            *d.skin_sel.lock().unwrap() = 0;
+                            InvalidateRect(hwnd, None, true);
+                        }
+                    }
+                }
+                (PanelFocus::Hero, VK_ESCAPE) => { hide_window(hwnd); }
+
+                // 皮肤列
+                (PanelFocus::Skin, VK_UP) => {
+                    let mut sel = d.skin_sel.lock().unwrap();
+                    if *sel > 0 { *sel -= 1; }
+                    InvalidateRect(hwnd, None, true);
+                }
+                (PanelFocus::Skin, VK_DOWN) => {
+                    let hero_sel = *d.hero_sel.lock().unwrap();
+                    let count = heroes.get(hero_sel).map(|h| h.skins.len()).unwrap_or(0);
+                    let mut skin_sel = d.skin_sel.lock().unwrap();
+                    if *skin_sel + 1 < count { *skin_sel += 1; }
+                    InvalidateRect(hwnd, None, true);
+                }
+                (PanelFocus::Skin, VK_LEFT) => {
+                    *d.focus.lock().unwrap() = PanelFocus::Hero;
+                    InvalidateRect(hwnd, None, true);
+                }
+                (PanelFocus::Skin, VK_RETURN) => {
+                    let hero_sel = *d.hero_sel.lock().unwrap();
+                    let skin_sel = *d.skin_sel.lock().unwrap();
+                    if let Some(hero) = heroes.get(hero_sel) {
+                        if let Some(skin) = hero.skins.get(skin_sel) {
+                            confirm(&skin.display_name, &d);
+                        }
+                    }
+                }
+                (PanelFocus::Skin, VK_ESCAPE) => {
+                    *d.focus.lock().unwrap() = PanelFocus::Hero;
+                    InvalidateRect(hwnd, None, true);
+                }
                 _ => {}
             }
             LRESULT(0)
@@ -320,29 +364,61 @@ unsafe fn get_data(hwnd: HWND) -> &'static SearchWindowData {
 fn update_search(data: &SearchWindowData) {
     let input = data.input.lock().unwrap().clone();
     let schemes = data.schemes.all();
-    *data.rows.lock().unwrap() = build_rows(&schemes, &input);
-    *data.selected.lock().unwrap() = 0;
+    *data.heroes.lock().unwrap() = group_heroes(&schemes, &input);
+    *data.hero_sel.lock().unwrap() = 0;
+    *data.skin_sel.lock().unwrap() = 0;
+    *data.focus.lock().unwrap() = PanelFocus::Hero;
     unsafe {
         InvalidateRect(
             windows::Win32::UI::WindowsAndMessaging::GetWindow(
                 windows::Win32::UI::WindowsAndMessaging::GW_HWNDFIRST,
                 windows::Win32::UI::WindowsAndMessaging::GW_HWNDFIRST,
             ),
-            None,
-            true,
+            None, true,
         );
     }
 }
 
-fn confirm_selection(data: &SearchWindowData) {
-    let rows = data.rows.lock().unwrap();
-    let sel = *data.selected.lock().unwrap();
-    if sel < rows.len() {
-        let name = rows[sel].display_name.clone();
-        info!("校准选择: {}", name);
-        if let Some(ref cb) = *data.on_select.lock().unwrap() {
-            cb(&name);
+fn handle_enter(data: &SearchWindowData) {
+    let focus = data.focus.lock().unwrap().clone();
+    let heroes = data.heroes.lock().unwrap();
+    match focus {
+        PanelFocus::Hero => {
+            let sel = *data.hero_sel.lock().unwrap();
+            if let Some(hero) = heroes.get(sel) {
+                if hero.skins.len() == 1 {
+                    confirm(&hero.skins[0].display_name, data);
+                } else {
+                    *data.focus.lock().unwrap() = PanelFocus::Skin;
+                    *data.skin_sel.lock().unwrap() = 0;
+                    unsafe {
+                        InvalidateRect(
+                            windows::Win32::UI::WindowsAndMessaging::GetWindow(
+                                windows::Win32::UI::WindowsAndMessaging::GW_HWNDFIRST,
+                                windows::Win32::UI::WindowsAndMessaging::GW_HWNDFIRST,
+                            ),
+                            None, true,
+                        );
+                    }
+                }
+            }
         }
+        PanelFocus::Skin => {
+            let hero_sel = *data.hero_sel.lock().unwrap();
+            let skin_sel = *data.skin_sel.lock().unwrap();
+            if let Some(hero) = heroes.get(hero_sel) {
+                if let Some(skin) = hero.skins.get(skin_sel) {
+                    confirm(&skin.display_name, data);
+                }
+            }
+        }
+    }
+}
+
+fn confirm(name: &str, data: &SearchWindowData) {
+    info!("校准选择: {}", name);
+    if let Some(ref cb) = *data.on_select.lock().unwrap() {
+        cb(name);
     }
 }
 
@@ -369,21 +445,19 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
 
     // ── 输入框 ──
     let input_rect = RECT {
-        left: PADDING,
-        top: PADDING,
-        right: rect.right - PADDING,
-        bottom: PADDING + INPUT_HEIGHT,
+        left: PADDING, top: PADDING,
+        right: rect.right - PADDING, bottom: PADDING + INPUT_HEIGHT,
     };
     let input_bg = CreateSolidBrush(RGB(45, 45, 52));
     FillRect(hdc, &input_rect, input_bg);
     DeleteObject(input_bg);
 
     let border = CreateSolidBrush(RGB(80, 80, 180));
-    let border_rect = RECT {
+    let br = RECT {
         left: PADDING - 1, top: PADDING - 1,
         right: rect.right - PADDING + 1, bottom: PADDING + INPUT_HEIGHT + 1,
     };
-    windows::Win32::Graphics::Gdi::FrameRect(hdc, &border_rect, border);
+    windows::Win32::Graphics::Gdi::FrameRect(hdc, &br, border);
     DeleteObject(border);
 
     let input = data.input.lock().unwrap();
@@ -403,8 +477,7 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
     };
     windows::Win32::Graphics::Gdi::DrawTextW(
         hdc, &text, &mut tr,
-        windows::Win32::Graphics::Gdi::DT_LEFT
-            | windows::Win32::Graphics::Gdi::DT_VCENTER
+        windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
             | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
     );
     drop(input);
@@ -412,52 +485,53 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
     // ── 表头 ──
     let header_y = PADDING + INPUT_HEIGHT + 8;
     SetTextColor(hdc, RGB(120, 120, 140));
-    let header_hero: Vec<u16> = "英雄".encode_utf16().collect();
+    let hh: Vec<u16> = "英雄".encode_utf16().collect();
     let mut hr = RECT {
         left: PADDING + 8, top: header_y,
         right: PADDING + COL_HERO, bottom: header_y + HEADER_HEIGHT,
     };
     windows::Win32::Graphics::Gdi::DrawTextW(
-        hdc, &header_hero, &mut hr,
-        windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+        hdc, &hh, &mut hr,
+        windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
+            | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
     );
-
-    let header_skin: Vec<u16> = "皮肤".encode_utf16().collect();
+    let hs: Vec<u16> = "皮肤".encode_utf16().collect();
     let mut sr = RECT {
         left: PADDING + COL_HERO + COL_SEP, top: header_y,
         right: rect.right - PADDING, bottom: header_y + HEADER_HEIGHT,
     };
     windows::Win32::Graphics::Gdi::DrawTextW(
-        hdc, &header_skin, &mut sr,
-        windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+        hdc, &hs, &mut sr,
+        windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
+            | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
     );
 
     // 分隔线
     let sep_y = header_y + HEADER_HEIGHT;
-    let sep_brush = CreateSolidBrush(RGB(55, 55, 60));
-    let sep_rect = RECT {
+    let sep = CreateSolidBrush(RGB(55, 55, 60));
+    let sr2 = RECT {
         left: PADDING, top: sep_y,
         right: rect.right - PADDING, bottom: sep_y + 1,
     };
-    FillRect(hdc, &sep_rect, sep_brush);
-    DeleteObject(sep_brush);
+    FillRect(hdc, &sr2, sep);
+    DeleteObject(sep);
 
-    // ── 数据行 ──
-    let rows = data.rows.lock().unwrap();
-    let sel = *data.selected.lock().unwrap();
-    let mut y = sep_y + 2;
-    let mut last_hero = String::new();
+    let list_top = sep_y + 2;
+    let heroes = data.heroes.lock().unwrap();
+    let hero_sel = *data.hero_sel.lock().unwrap();
+    let skin_sel = *data.skin_sel.lock().unwrap();
+    let focus = data.focus.lock().unwrap().clone();
 
-    for (i, row) in rows.iter().enumerate() {
-        let is_first_of_group = row.hero_name != last_hero;
-        last_hero = row.hero_name.clone();
-
+    // ── 英雄列 ──
+    let mut y = list_top;
+    for (i, hero) in heroes.iter().enumerate() {
         let row_rect = RECT {
             left: PADDING, top: y,
-            right: rect.right - PADDING, bottom: y + ROW_HEIGHT,
+            right: PADDING + COL_HERO, bottom: y + ROW_HEIGHT,
         };
 
-        if i == sel {
+        let is_active = focus == PanelFocus::Hero && i == hero_sel;
+        if is_active {
             let sel_bg = CreateSolidBrush(RGB(70, 70, 160));
             FillRect(hdc, &row_rect, sel_bg);
             DeleteObject(sel_bg);
@@ -471,39 +545,72 @@ unsafe fn paint(hwnd: HWND, data: &SearchWindowData) {
             SetTextColor(hdc, RGB(200, 200, 215));
         }
 
-        // 英雄名：只在每组第一行显示
-        if is_first_of_group {
-            let hero: Vec<u16> = row.hero_name.encode_utf16().collect();
-            let mut hr = RECT {
-                left: PADDING + 8, top: y + 2,
-                right: PADDING + COL_HERO, bottom: y + ROW_HEIGHT - 2,
-            };
-            windows::Win32::Graphics::Gdi::DrawTextW(
-                hdc, &hero, &mut hr,
-                windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
-                    | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
-            );
-        }
-
-        // 皮肤名：只有多皮肤英雄才显示皮肤名，单皮肤且原皮则留空
-        let skin_text = if row.skin_name == "原皮" && row.skin_count <= 1 {
-            String::new()
-        } else {
-            row.skin_name.clone()
-        };
-        SetTextColor(hdc, if i == sel { RGB(220, 220, 255) } else { RGB(170, 170, 185) });
-        let skin: Vec<u16> = skin_text.encode_utf16().collect();
-        let mut sr = RECT {
-            left: PADDING + COL_HERO + COL_SEP, top: y + 2,
-            right: rect.right - PADDING - 8, bottom: y + ROW_HEIGHT - 2,
+        let name: Vec<u16> = hero.name.encode_utf16().collect();
+        let mut nr = RECT {
+            left: PADDING + 8, top: y + 2,
+            right: PADDING + COL_HERO - 8, bottom: y + ROW_HEIGHT - 2,
         };
         windows::Win32::Graphics::Gdi::DrawTextW(
-            hdc, &skin, &mut sr,
+            hdc, &name, &mut nr,
             windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
                 | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
         );
 
         y += ROW_HEIGHT;
+    }
+
+    // ── 垂直分隔线 ──
+    let vline = CreateSolidBrush(RGB(55, 55, 60));
+    let vr = RECT {
+        left: PADDING + COL_HERO + COL_SEP / 2,
+        top: list_top,
+        right: PADDING + COL_HERO + COL_SEP / 2 + SEP_WIDTH,
+        bottom: rect.bottom - PADDING,
+    };
+    FillRect(hdc, &vr, vline);
+    DeleteObject(vline);
+
+    // ── 皮肤列：只显示当前选中英雄的皮肤 ──
+    if let Some(hero) = heroes.get(hero_sel) {
+        let mut y = list_top;
+        for (i, skin) in hero.skins.iter().enumerate() {
+            let row_rect = RECT {
+                left: PADDING + COL_HERO + COL_SEP,
+                top: y,
+                right: rect.right - PADDING,
+                bottom: y + ROW_HEIGHT,
+            };
+
+            let is_active = focus == PanelFocus::Skin && i == skin_sel;
+            if is_active {
+                let sel_bg = CreateSolidBrush(RGB(70, 70, 160));
+                FillRect(hdc, &row_rect, sel_bg);
+                DeleteObject(sel_bg);
+                SetTextColor(hdc, RGB(255, 255, 255));
+            } else {
+                if i % 2 == 0 {
+                    let alt = CreateSolidBrush(RGB(34, 34, 39));
+                    FillRect(hdc, &row_rect, alt);
+                    DeleteObject(alt);
+                }
+                SetTextColor(hdc, RGB(170, 170, 185));
+            }
+
+            let skin_text: Vec<u16> = skin.skin_name.encode_utf16().collect();
+            let mut sr = RECT {
+                left: row_rect.left + 8,
+                top: y + 2,
+                right: row_rect.right - 8,
+                bottom: y + ROW_HEIGHT - 2,
+            };
+            windows::Win32::Graphics::Gdi::DrawTextW(
+                hdc, &skin_text, &mut sr,
+                windows::Win32::Graphics::Gdi::DT_LEFT | windows::Win32::Graphics::Gdi::DT_VCENTER
+                    | windows::Win32::Graphics::Gdi::DT_SINGLELINE,
+            );
+
+            y += ROW_HEIGHT;
+        }
     }
 
     SelectObject(hdc, old_font);
