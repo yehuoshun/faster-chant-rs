@@ -143,18 +143,12 @@ fn main() -> Result<()> {
         let page = detector.detect(hwnd, &cfg);
         detector.transition(page, hwnd, &cfg, &ocr, &schemes_arc, &cal);
 
-        // 校准热键：仅在游戏内响应，避免干扰确认页 OCR
+        // 校准热键：直接触发，不限页面
         if hotkey_triggered.swap(false, Ordering::Relaxed) {
-            if page == GamePage::InGame {
-                info!("Ctrl+Shift+H 触发校准");
-                let results = cal.search("", &schemes_arc);
-                info!("可用方案 ({})：", results.len());
-                for (i, name) in results.iter().enumerate() {
-                    info!("  {}. {}", i + 1, name);
-                }
-                // TODO: 弹出搜索窗口
-            } else {
-                info!("校准仅在游戏内可用（当前: {:?}）", page);
+            let results = cal.search("", &schemes_arc);
+            info!("可用方案 ({})：", results.len());
+            for (i, name) in results.iter().enumerate() {
+                info!("  {}. {}", i + 1, name);
             }
         }
 
