@@ -1,5 +1,6 @@
 use anyhow::Result;
 use log::{info, warn};
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -90,10 +91,14 @@ impl PageDetector {
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
-    info!("faster-chant-rs 启动");
-
     let cfg = config::AppConfig::load()?;
+
+    // 初始化日志
+    let base = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    logger::Logger::init(cfg.debug_mode, base.join("logs"))?;
 
     // 首次启动生成默认方案
     scheme::defaults::generate_defaults(&cfg.schemes_dir)?;

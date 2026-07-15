@@ -29,6 +29,8 @@ pub struct AppConfig {
     pub burst_mode: bool,
     /// 连发间隔（毫秒）
     pub burst_interval_ms: u64,
+    /// 调试模式
+    pub debug_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +104,7 @@ impl Default for AppConfig {
             taunt_cooldown_secs: 5,
             burst_mode: false,
             burst_interval_ms: 1000,
+            debug_mode: false,
         }
     }
 }
