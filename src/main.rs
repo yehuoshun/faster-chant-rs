@@ -106,17 +106,17 @@ fn main() -> Result<()> {
     let mut detector = PageDetector::new();
     let mut kda_tracker = kda::KdaTracker::new()?;
     let cal = Arc::new(calibration::Calibration::new());
-
-    // 创建隐藏窗口用于接收热键消息
     let running = Arc::new(AtomicBool::new(true));
-    let cal_clone = cal.clone();
     let schemes_arc = Arc::new(schemes);
+
+    // 热键触发标志：热键线程设置，主循环消费
+    let hotkey_triggered = Arc::new(AtomicBool::new(false));
 
     let _hotkey_thread = {
         let running = running.clone();
-        let schemes = schemes_arc.clone();
+        let flag = hotkey_triggered.clone();
         std::thread::spawn(move || {
-            create_hotkey_window(running, cal_clone, schemes);
+            create_hotkey_window(running, flag);
         })
     };
 
@@ -143,6 +143,21 @@ fn main() -> Result<()> {
         let page = detector.detect(hwnd, &cfg);
         detector.transition(page, hwnd, &cfg, &ocr, &schemes_arc, &cal);
 
+        // 校准热键：仅在游戏内响应，避免干扰确认页 OCR
+        if hotkey_triggered.swap(false, Ordering::Relaxed) {
+            if page == GamePage::InGame {
+                info!("Ctrl+Shift+H 触发校准");
+                let results = cal.search("", &schemes_arc);
+                info!("可用方案 ({})：", results.len());
+                for (i, name) in results.iter().enumerate() {
+                    info!("  {}. {}", i + 1, name);
+                }
+                // TODO: 弹出搜索窗口
+            } else {
+                info!("校准仅在游戏内可用（当前: {:?}）", page);
+            }
+        }
+
         if page == GamePage::InGame {
             match kda_tracker.tick(hwnd, &cfg) {
                 Ok(event) => match event {
@@ -165,8 +180,7 @@ fn main() -> Result<()> {
 /// 创建隐藏窗口，处理热键消息
 fn create_hotkey_window(
     running: Arc<AtomicBool>,
-    cal: Arc<calibration::Calibration>,
-    schemes: Arc<SchemeManager>,
+    hotkey_triggered: Arc<AtomicBool>,
 ) {
     unsafe {
         let hinstance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
@@ -215,14 +229,7 @@ fn create_hotkey_window(
             while PeekMessageW(&mut msg, hwnd, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_HOTKEY && msg.wParam.0 == calibration::HOTKEY_CALIBRATE as usize
                 {
-                    info!("Ctrl+Shift+H 触发校准");
-                    // 搜索所有方案
-                    let results = cal.search("", &schemes);
-                    info!("可用方案 ({})：", results.len());
-                    for (i, name) in results.iter().enumerate() {
-                        info!("  {}. {}", i + 1, name);
-                    }
-                    // TODO: 弹出搜索窗口
+                    hotkey_triggered.store(true, Ordering::Relaxed);
                 }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
