@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 mod calibration;
 mod config;
+mod defaults;
 mod kda;
 mod ocr;
 mod scheme;
@@ -92,6 +93,10 @@ fn main() -> Result<()> {
     info!("faster-chant-rs 启动");
 
     let cfg = config::AppConfig::load()?;
+
+    // 首次启动生成默认方案
+    defaults::generate_defaults(&cfg.schemes_dir)?;
+
     let schemes = Arc::new(scheme::SchemeManager::load(&cfg.schemes_dir)?);
     info!("已加载 {} 个英雄方案", schemes.all().len());
 
